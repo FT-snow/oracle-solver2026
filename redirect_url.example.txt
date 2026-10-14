@@ -1,0 +1,3 @@
+# Paste your Oracle Academy quiz session URL here (one line)
+# Example format:
+# https://academy.oracle.com/pls/f?p=63000:14:...
