@@ -157,6 +157,9 @@
         if (area === 'local' && Object.prototype.hasOwnProperty.call(changes, 'autopilotEnabled')) {
           autopilotEnabled = changes.autopilotEnabled.newValue !== false;
           log('Autopilot toggled ' + (autopilotEnabled ? 'ON' : 'OFF') + ' from popup');
+          // START SOLVING also clears the navigation budget so a paused run
+          // can proceed again.
+          if (autopilotEnabled) navs = [];
         }
       });
     }
@@ -956,11 +959,22 @@
       lastModalConfirmClickTime = Date.now();
       triggerNavClick(completeBtn, 'Confirm Complete Assessment on Modal', true);
 
-      // Navigate to Course Outline in the same tab as requested
+      // Navigate back to the course outline in the same tab as requested.
       setTimeout(async () => {
-        const dest = await getTargetOutlineUrl();
-        log('Navigating to Course Outline link:', dest);
-        navigateTop(dest);
+        const back = await findBackToCourseControl();
+        if (back) {
+          log('Confirm modal: clicking return-to-course control.');
+          triggerNavClick(back, 'Post-confirm: return to course', true);
+          return;
+        }
+        let stored = '';
+        try {
+          stored = sessionStorage.getItem('oracle_outline_url') || '';
+        } catch (e) {}
+        if (stored && stored.startsWith('http')) {
+          log('Post-confirm: navigating to captured outline URL.');
+          navigateTop(stored);
+        }
       }, 1500);
       return true;
     }
@@ -994,36 +1008,76 @@
     return false;
   }
 
-  // Navigate the TOP window (same-origin) so we never strand the user inside
-  // an iframe when redirecting after a quiz completes.
+  // --- Navigation budget: no infinite redirect/reload loops --------------------
+  // Any automatic page navigation/reload now consumes budget: max 6 per
+  // 10 minutes. Exceeded -> the autopilot pauses instead of hijacking the tab
+  // (you can always START SOLVING again from the popup, which resets it).
+  let navs = []; // navigation budget timestamps
+  function navBudgetOK() {
+    const now = Date.now();
+    navs = navs.filter((t) => now - t < 10 * 60 * 1000);
+    if (navs.length >= 6) {
+      warn('Navigation limit reached (6 in 10 min) — pausing. Press START SOLVING in the popup to retry.');
+      reportState('Paused', 'Navigation limit — press START SOLVING to retry');
+      return false;
+    }
+    navs.push(now);
+    return true;
+  }
+
   function navigateTop(url) {
+    if (!url || !String(url).startsWith('http')) return false;
+    const current = (typeof location !== 'undefined' ? location.href.split('#')[0] : '');
+    if (current && url.split('#')[0] === current) return false; // never "reload" by navigating
+    if (!navBudgetOK()) return false;
     try {
       if (window.self !== window.top && window.top) {
         window.top.location.href = url;
-        return;
+        return true;
       }
     } catch (e) {
       /* cross-origin — fall through to same-frame navigation */
     }
     location.href = url;
+    return true;
   }
 
-  // Remember the CURRENT session's course-outline URL whenever we see it.
-  // The old hardcoded TARGET_OUTLINE_URL contained a dead APEX session id +
-  // checksum, which is what sent everyone to a broken page after quizzes —
-  // the root cause of "it never moves on to the next section".
+  // Remember the outline/course-list URL whenever a page looks like one —
+  // independent of any specific Oracle page number, since accounts differ.
   function maybeCaptureOutlineUrl() {
     try {
       const href = location.href;
-      if (!/f\?p=63000:14/.test(href)) return;
+      if (!href || !href.includes('academy.oracle.com')) return;
+      const text = bodyText();
+      const rowStatuses = (text.match(/not\s*started|in\s*progress|\bcompleted\b/gi) || []).length;
+      const looksLikeCourseList =
+        rowStatuses >= 2 &&
+        (/course|section|module|chapter|lesson|outline/i.test(document.title || '') ||
+          /course\s+outline|sections?|modules?|chapter/i.test(text.slice(0, 3000)));
+      if (!looksLikeCourseList) return;
       const stored = sessionStorage.getItem('oracle_outline_url');
       if (stored === href) return;
-      const text = bodyText();
-      if (/course\s+outline|section|module|chapter|not\s*started|in\s*progress|completed/i.test(text)) {
-        sessionStorage.setItem('oracle_outline_url', href);
-        log('Captured course outline URL for this session:', href.slice(0, 90));
-      }
+      sessionStorage.setItem('oracle_outline_url', href);
+      log('Captured course outline URL:', href.slice(0, 90));
     } catch (e) {}
+  }
+
+  // After a quiz: prefer an on-page control ("Return to Course" etc.) over
+  // any fabricated URL; stale hardcoded URLs caused the reload loops.
+  async function findBackToCourseControl() {
+    const cands = Array.from(document.querySelectorAll('a, button, [role="button"]')).filter(isVisible);
+    const byText = cands.find((el) => {
+      const t = norm(el.innerText || el.value || '').toLowerCase();
+      return /back\s+to\s+course|return\s+to\s+course|back\s+to\s+class|course\s+outline|back\s+to\s+outline|back\s+to\s+section|return\s+to\s+section/.test(t);
+    });
+    if (byText) return byText;
+    // Breadcrumb link naming the course (APEX style) — first link in header area.
+    const crumbs = cands.filter((el) => el.closest('header, #t_Header, .t-Breadcrumb, .t-Breadcrumb-bar, nav'));
+    for (const crumb of crumbs) {
+      const t = norm(crumb.innerText || '').toLowerCase();
+      if (/section|chapter|module|course|class|module/i.test(t) && t.length <= 80 && (crumb.getAttribute('href') || '').startsWith('http')) return crumb;
+    }
+    return null;
   }
 
   // Dynamically resolves where to go after a quiz: current-session outline URL
@@ -1095,15 +1149,37 @@
       }
     }
 
-    reportState('Navigating', 'Redirecting from Score Screen to Course Outline');
-    const dest = await getTargetOutlineUrl();
-    // Same-URL guard: do not "navigate" to the page we are already on — that
-    // reads as an endless reload to the user.
-    if (dest && href && dest.split('#')[0] === href.split('#')[0]) {
-      log('Score screen resolved but we are already at the target — no reload.');
-      return true;
+    reportState('Navigating', 'Score screen: returning to the course');
+    // 1) Trust the page's own return control when one exists.
+    const back = await findBackToCourseControl();
+    if (back) {
+      log('Score screen: clicking return-to-course control.');
+      const lastNavAt = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
+      sessionStorage.setItem('score_nav_at', String(Date.now()));
+      return triggerNavClick(back, 'Score screen: return to course', true);
     }
-    navigateTop(dest);
+
+    // 2) The outline URL captured from THIS browsing session (trustworthy —
+    // it is the exact page we were on minutes ago).
+    let stored = '';
+    try {
+      stored = sessionStorage.getItem('oracle_outline_url') || '';
+    } catch (e) {}
+    if (stored && stored.startsWith('http')) {
+      const lastNavStored = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
+      if (Date.now() - lastNavStored > 30000) {
+        sessionStorage.setItem('score_nav_at', String(Date.now()));
+        return navigateTop(stored);
+      }
+    }
+
+    // 3) Last resort: go back one step in the SPA flow (once).
+    const lastNavStored2 = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
+    if (Date.now() - lastNavStored2 > 30000) {
+      sessionStorage.setItem('score_nav_at', String(Date.now()));
+      log('No return control or captured outline — going back one page.');
+      history.back();
+    }
     return true;
   }
 
@@ -1200,22 +1276,26 @@
   }
 
   // --- Course Outline Navigation ---
-  // Automatically opens the NEXT unfinished section on the course outline page
-  // (prefers "In Progress", then "Not Started"; never touches "Completed").
+  // Automatically opens the NEXT unfinished section on the outline page.
+  // Detection is content-based (rows with status/percentage), not URL-based,
+  // so it works no matter which page id the account uses.
   function handleCourseOutline() {
-    const href = (typeof location !== 'undefined' && location.href) || '';
-    if (!/f\?p=63000:14/.test(href)) return false;
     if (Date.now() - lastOutlineNavTime < 4000) return false;
 
     const text = bodyText();
-    if (!/not\s*started|in\s*progress|resume|continue|completed/i.test(text)) return false;
+    // Needs section-ish listings with at least two status rows to act.
+    const rowMatches = text.match(/not\s*started|in\s*progress|\bcompleted\b|\bpassed\b|resume|continue/gi) || [];
+    const pctMatches = text.match(/\b\d{1,3}\s*%/g) || [];
+    const looksLikeOutline =
+      (rowMatches.length >= 2 && /course|section|module|chapter|outline/i.test(text.slice(0, 3000))) ||
+      pctMatches.length >= 2;
+    if (!looksLikeOutline) return false;
+    if (Date.now() - lastOutlineNavTime < 4000) return false;
 
     const clickables = Array.from(
       document.querySelectorAll('a, button, [role="button"], tr[onclick]')
     ).filter(isVisible);
 
-    // Walk rows in DOM order — course sections are listed in course sequence,
-    // so the FIRST incomplete row is the one to open next.
     let best = null;
     for (const el of clickables) {
       let container = el.closest('tr, li, article') || el.closest('.row, div.t-Report-row') || el;
@@ -1227,9 +1307,7 @@
       if (statusText.length > 400) continue;
 
       const s = statusText.toLowerCase();
-      if (/\bcompleted\b|\bpassed\b|100\s*%|score\s*report/i.test(s)) continue; // finished — skip
-      // A section row carries a status: textual (Not Started / In Progress /
-      // Resume) or a progress percentage below 100.
+      if (/\bcompleted\b|\bpassed\b|\b100\s*%\b|score\s*report/i.test(s)) continue; // finished — skip
       const isSectionRow =
         /not\s*started|in\s*progress|resume|continue/.test(s) ||
         (/\b(\d{1,2})\s*%/.test(s) && parseInt((s.match(/\b(\d{1,2})\s*%/) || [])[1], 10) < 100);
@@ -1240,7 +1318,6 @@
 
     if (!best) return false;
     lastOutlineNavTime = Date.now();
-    // Opening a NEW section: reset the auto-retake attempt counter for it.
     try {
       sessionStorage.setItem('auto_attempts', '0');
     } catch (e) {}
