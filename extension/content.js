@@ -608,6 +608,15 @@
 
   // Escalating fallbacks when the normal "Submit Answer" button can't be found.
   function tryAlternateSubmit() {
+    // On the last question the real goal is finishing: try finish-style buttons first.
+    const finish = Array.from(
+      document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
+    ).filter(isVisible).find((b) => isCompleteAssessmentText(b.innerText || b.value || ''));
+    if (finish) {
+      log('Alternate submit: finish-style button found:', finish);
+      return triggerNavClick(finish, 'Alternate submit: finish assessment', true);
+    }
+
     const sels = [
       'button[aria-label*="submit" i]',
       'button[aria-label*="next" i]',
@@ -644,6 +653,8 @@
 
     let btn = buttons.find((b) => {
       const txt = norm(b.innerText || b.value || '').toLowerCase();
+      // On the last question, finish-style buttons can BE the submit.
+      if (isLastQuestion && isCompleteAssessmentText(txt)) return true;
       return (
         txt.includes('submit answer') ||
         txt === 'next question' ||
@@ -663,6 +674,23 @@
   }
 
   let solvingQuizStartTime = 0;
+  // Once a LAST question has been answered, never answer it again — repeated
+  // re-answering is what looked like "rotating options" forever. The
+  // Complete/confirm/results handlers take over from here per session.
+  function lastQuestionBlocked(snippet) {
+    try {
+      const key = 'lastq_done:' + snippet;
+      return !!sessionStorage.getItem(key);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function blockLastQuestion(snippet) {
+    try {
+      if (snippet) sessionStorage.setItem('lastq_done:' + snippet, String(Date.now()));
+    } catch (e) {}
+  }
 
   async function runQuizFlow() {
     if (isSolvingQuiz) return;
@@ -678,6 +706,12 @@
       }
 
       const snippet = norm(data.question || '').slice(0, 120);
+
+      // A last question already answered this session is OFF LIMITS for the
+      // solver — only the finish/modal/results handlers act on it now.
+      if (checkIsLastQuestion() && lastQuestionBlocked(snippet)) {
+        return;
+      }
       if (snippet && snippet === lastSubmittedSnippet && Date.now() - lastNavActionTime < 10000) {
         return;
       }
@@ -733,6 +767,7 @@
         }
 
         if (isLast) {
+          blockLastQuestion(snippet);
           log('Last question answered! Waiting for the Complete Assessment button...');
           // Give the page a moment to reveal the finish button, then act.
           for (let attempt = 0; attempt < 12; attempt++) {

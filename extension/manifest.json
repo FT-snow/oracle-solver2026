@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Oracle Solver 2026",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Autonomous Oracle Academy autopilot: solves quizzes from the shared cloud database, falls back to your own Gemini key. Login required — one device per account.",
   "permissions": ["storage"],
   "host_permissions": [

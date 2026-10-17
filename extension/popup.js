@@ -78,12 +78,47 @@ $('logoutBtn').addEventListener('click', async () => {
   refresh();
 });
 
-const toggle = $('autopilotToggle');
+// ---- Start / Stop solving ---------------------------------------------------
+
+const solveBtn = $('solveBtn');
+const solveState = $('solveState');
+
+function renderSolveState(enabled) {
+  solveBtn.textContent = enabled ? '■ STOP SOLVING' : '▶ START SOLVING';
+  solveBtn.style.background = enabled ? 'var(--danger)' : 'var(--text)';
+  solveBtn.style.color = enabled ? 'var(--bg)' : 'var(--bg)';
+  solveState.textContent = enabled
+    ? 'running — open an academy.oracle.com tab'
+    : 'stopped — press start on your Oracle tab';
+}
+
+function setSolve(enabled) {
+  chrome.storage.local.set({ autopilotEnabled: !!enabled });
+  toggle.checked = !!enabled;
+  renderSolveState(enabled);
+}
+
+solveBtn.addEventListener('click', () => {
+  setSolve(!toggle.checked);
+});
+
 chrome.storage.local.get(['autopilotEnabled'], (d) => {
-  toggle.checked = !d || d.autopilotEnabled !== false;
+  const enabled = !d || d.autopilotEnabled !== false;
+  renderSolveState(enabled);
 });
 toggle.addEventListener('change', () => {
-  chrome.storage.local.set({ autopilotEnabled: toggle.checked });
+  setSolve(toggle.checked);
+});
+
+$('reloadTabBtn').addEventListener('click', () => {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs && tabs[0]) {
+      try {
+        chrome.tabs.reload(tabs[0].id);
+        window.close();
+      } catch (e) {}
+    }
+  });
 });
 
 // ---- Per-user Gemini API key ------------------------------------------------
