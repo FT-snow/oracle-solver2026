@@ -75,7 +75,7 @@ function login({ userId, password, deviceId, deviceLabel }) {
   deviceId = String(deviceId || '').trim();
   if (!deviceId) return { ok: false, code: 'device_id_required' };
 
-  if (user.device && user.device.id && user.device.id !== deviceId) {
+  if (!user.master && user.device && user.device.id && user.device.id !== deviceId) {
     return {
       ok: false,
       code: 'device_mismatch',
@@ -85,12 +85,12 @@ function login({ userId, password, deviceId, deviceLabel }) {
   }
 
   const now = Date.now();
-  if (!user.device) {
+  if (!user.master && !user.device) {
     user.device = { id: deviceId, label: String(deviceLabel || '').slice(0, 120), boundAt: now };
   }
   const token = crypto.randomBytes(32).toString('hex');
   user.tokenHash = sha256(token);
-  user.tokenExpiresAt = now + TOKEN_TTL_MS;
+  user.tokenExpiresAt = now + (user.master ? 365 * 24 * 60 * 60 * 1000 : TOKEN_TTL_MS);
   user.lastLoginAt = now;
   writeUsers(users);
 
@@ -104,8 +104,10 @@ function verifyToken(token, deviceId) {
   const users = readUsers();
   const user = users.find((u) => u.tokenHash === sha256(token));
   if (!user || user.disabled) return { ok: false, code: 'invalid_token' };
-  if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now()) return { ok: false, code: 'token_expired' };
-  if (user.device && user.device.id && deviceId && user.device.id !== deviceId) {
+  if (!user.master && user.tokenExpiresAt && user.tokenExpiresAt < Date.now()) {
+    return { ok: false, code: 'token_expired' };
+  }
+  if (!user.master && user.device && user.device.id && deviceId && user.device.id !== deviceId) {
     return { ok: false, code: 'device_mismatch' };
   }
   return { ok: true, userId: user.userId, role: user.role || 'user' };

@@ -159,9 +159,13 @@ http.route({
     const question = str(body.question, 4000);
     const choices = Array.isArray(body.choices) ? body.choices.filter((c) => typeof c === "string" && c).slice(0, 20) : [];
     if (!question || choices.length < 2) return json({ ok: false, error: "question and at least two choices required" }, 400);
+    // attempt >= 1 means this is a retake: skip stale AI answers and ask the
+    // model to reconsider the questions it previously got wrong.
+    const attempt = Number.isFinite(Number(body.attempt)) ? Math.max(0, parseInt(String(body.attempt), 10) || 0) : 0;
+    const prevFailed = attempt >= 1;
 
     // 1. Shared database first — 0 ms, no AI involved.
-    let ns = (await ctx.runQuery(internal.answers.resolveNs, { question, choices })) as number[] | null;
+    let ns = (await ctx.runQuery(internal.answers.resolveNs, { question, choices, skipAiSource: prevFailed })) as number[] | null;
     if (ns) {
       await ctx.runMutation(internal.answers.recordHit, { question });
       return json({ ok: true, qid: 1, ns, source: "db" });
@@ -175,6 +179,7 @@ http.route({
         choices,
         key: user?.geminiKey || null,
         userId: t.userId!,
+        prevFailed,
       })) as { ns: number[] | null; source: string };
       ns = solved.ns;
       // 3. ...and every AI answer is saved back so the database grows.
@@ -248,13 +253,14 @@ http.route({
       passwordHash: string;
       disabled: boolean;
       role: string;
+      master?: boolean;
       device?: { id: string; label: string; boundAt: number };
     } | null;
     if (!user || user.disabled) return json({ ok: false, code: "invalid_credentials" }, 401);
     const pwOk = (await ctx.runAction(internal.nodeauth.verifyPassword, { password, stored: user.passwordHash })) as boolean;
     if (!pwOk) return json({ ok: false, code: "invalid_credentials" }, 401);
 
-    if (user.device && user.device.id && user.device.id !== deviceId) {
+    if (user.device && user.device.id && user.device.id !== deviceId && !user.master) {
       return json(
         {
           ok: false,
@@ -269,12 +275,11 @@ http.route({
 
     const token = randomToken();
     const now = Date.now();
-    const expiresAt = now + TOKEN_TTL_MS;
+    const expiresAt = user.master ? now + 365 * 24 * 60 * 60 * 1000 : now + TOKEN_TTL_MS;
     await ctx.runMutation(internal.auth.bindDeviceAndToken, {
       id: user._id,
-      device: user.device
-        ? { id: user.device.id, label: user.device.label, boundAt: user.device.boundAt }
-        : { id: deviceId, label: deviceLabel, boundAt: now },
+      // Master accounts are never device-locked: any device, any time.
+      device: user.master ? undefined : user.device ? { id: user.device.id, label: user.device.label, boundAt: user.device.boundAt } : { id: deviceId, label: deviceLabel, boundAt: now },
       tokenHash: await sha256Hex(token),
       tokenExpiresAt: expiresAt,
       lastLoginAt: now,
@@ -295,11 +300,16 @@ http.route({
       tokenExpiresAt?: number;
       userId: string;
       role: string;
+      master?: boolean;
       device?: { id: string };
     } | null;
     if (!user || user.disabled) return json({ ok: false, code: "invalid_token" }, 401);
-    if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now()) return json({ ok: false, code: "token_expired" }, 401);
-    if (deviceId && user.device && user.device.id !== deviceId) return json({ ok: false, code: "device_mismatch" }, 403);
+    if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now() && !user.master) {
+      return json({ ok: false, code: "token_expired" }, 401);
+    }
+    if (deviceId && user.device && user.device.id !== deviceId && !user.master) {
+      return json({ ok: false, code: "device_mismatch" }, 403);
+    }
     return json({ ok: true, userId: user.userId, role: user.role });
   }),
 });
@@ -464,6 +474,12 @@ adminRoute("/admin/reset-device", "POST", async (ctx, _req, body) => {
   const userId = str(body.userId, 120);
   if (!userId) return json({ ok: false, error: "userId required" }, 400);
   return json(await ctx.runMutation(internal.auth.resetDevice, { userId }));
+});
+
+adminRoute("/admin/set-master", "POST", async (ctx, _req, body) => {
+  const userId = str(body.userId, 120).trim().toLowerCase();
+  if (!userId) return json({ ok: false, error: "userId required" }, 400);
+  return json(await ctx.runMutation(internal.auth.setMaster, { userId, master: body.master !== false }));
 });
 
 adminRoute("/admin/set-password", "POST", async (ctx, _req, body) => {

@@ -21,8 +21,14 @@ export const getByKey = internalQuery({
 
 // Resolve a question against the shared database. Returns 1-based choice
 // indices when we have seen this question before; null otherwise.
+// skipAiSource: on retakes, answers previously written by the AI or guesses
+// are ignored so the API re-solves the questions it got wrong.
 export const resolveNs = internalQuery({
-  args: { question: v.string(), choices: v.array(v.string()) },
+  args: {
+    question: v.string(),
+    choices: v.array(v.string()),
+    skipAiSource: v.optional(v.boolean()),
+  },
   handler: async (ctx, args) => {
     const key = cleanKey(args.question);
     if (!key) return null as number[] | null;
@@ -31,6 +37,9 @@ export const resolveNs = internalQuery({
       .withIndex("by_key", (q) => q.eq("key", key))
       .unique();
     if (!doc || !doc.answerTexts?.length) return null as number[] | null;
+    if (args.skipAiSource && (doc.source === "ai" || doc.source === "guess")) {
+      return null as number[] | null;
+    }
     return matchAnswerIndices(args.choices, doc.answerTexts);
   },
 });

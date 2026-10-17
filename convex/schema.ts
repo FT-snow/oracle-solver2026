@@ -10,7 +10,7 @@ export default defineSchema({
   users: defineTable({
     userId: v.string(), // normalized lowercase
     passwordHash: v.string(), // scrypt "salt:hash" (hex)
-    role: v.string(), // "user" | "admin"
+    role: v.string(), // "user" | "admin" | "master"
     disabled: v.boolean(),
     device: v.optional(
       v.object({
@@ -21,6 +21,7 @@ export default defineSchema({
     ),
     tokenHash: v.optional(v.string()), // sha256(token)
     tokenExpiresAt: v.optional(v.number()),
+    master: v.optional(v.boolean()), // master accounts: no device lock, no expiry
     geminiKey: v.optional(v.string()), // per-user Gemini API key (set by user or admin)
     createdAt: v.number(),
     lastLoginAt: v.optional(v.number()),

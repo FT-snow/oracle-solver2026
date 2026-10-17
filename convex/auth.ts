@@ -76,14 +76,14 @@ export const createUser = internalMutation({
 export const bindDeviceAndToken = internalMutation({
   args: {
     id: v.id("users"),
-    device: v.object({ id: v.string(), label: v.string(), boundAt: v.number() }),
+    device: v.optional(v.object({ id: v.string(), label: v.string(), boundAt: v.number() })),
     tokenHash: v.string(),
     tokenExpiresAt: v.number(),
     lastLoginAt: v.number(),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.id, {
-      device: args.device,
+      device: args.device ?? undefined,
       tokenHash: args.tokenHash,
       tokenExpiresAt: args.tokenExpiresAt,
       lastLoginAt: args.lastLoginAt,
@@ -175,6 +175,20 @@ export const removeUser = internalMutation({
   },
 });
 
+export const setMaster = internalMutation({
+  args: { userId: v.string(), master: v.boolean() },
+  handler: async (ctx, args) => {
+    const norm = args.userId.trim().toLowerCase();
+    const doc = await ctx.db
+      .query("users")
+      .withIndex("by_userId", (q) => q.eq("userId", norm))
+      .unique();
+    if (!doc) return { ok: false as const, error: "no such user" };
+    await ctx.db.patch(doc._id, { master: args.master, role: args.master ? "master" : doc.role });
+    return { ok: true as const };
+  },
+});
+
 export const listAll = internalQuery({
   handler: async (ctx) => {
     const docs = await ctx.db.query("users").collect();
@@ -182,6 +196,8 @@ export const listAll = internalQuery({
       userId: u.userId,
       role: u.role,
       disabled: u.disabled,
+      master: !!u.master,
+      geminiKeySet: !!u.geminiKey,
       device: u.device
         ? { id: u.device.id.slice(0, 12) + "…", label: u.device.label, boundAt: u.device.boundAt }
         : null,

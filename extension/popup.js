@@ -82,6 +82,7 @@ $('logoutBtn').addEventListener('click', async () => {
 
 const solveBtn = $('solveBtn');
 const solveState = $('solveState');
+const toggle = $('autopilotToggle');
 
 function renderSolveState(enabled) {
   solveBtn.textContent = enabled ? '■ STOP SOLVING' : '▶ START SOLVING';
@@ -110,16 +111,19 @@ toggle.addEventListener('change', () => {
   setSolve(toggle.checked);
 });
 
-$('reloadTabBtn').addEventListener('click', () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (tabs && tabs[0]) {
-      try {
-        chrome.tabs.reload(tabs[0].id);
-        window.close();
-      } catch (e) {}
-    }
+const reloadTabBtn = $('reloadTabBtn');
+if (reloadTabBtn) {
+  reloadTabBtn.addEventListener('click', () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0]) {
+        try {
+          chrome.tabs.reload(tabs[0].id);
+          window.close();
+        } catch (e) {}
+      }
+    });
   });
-});
+}
 
 // ---- Per-user Gemini API key ------------------------------------------------
 

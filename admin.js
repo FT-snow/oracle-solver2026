@@ -44,7 +44,8 @@ async function main() {
   node admin.js reset-device <userId>
   node admin.js set-password <userId> [newPassword]
   node admin.js remove <userId>
-  node admin.js genpass`);
+  node admin.js genpass
+  node admin.js master <userId>`);
     process.exit(0);
   }
 
@@ -141,6 +142,33 @@ async function main() {
         result = { ok: true, note: 'local mode: key stored for this machine' };
       }
       if (result.ok) console.log(`Gemini key saved for "${userId}"${result.note ? ` (${result.note})` : ''} — their solver will use it automatically.`);
+      else { console.error('Failed:', result.error); process.exit(1); }
+      break;
+    }
+    case 'master': {
+      const userId = positional[0];
+      if (!userId) { console.error('Usage: node admin.js master <userId>'); process.exit(1); }
+      if (CONVEX_URL) {
+        const r = await cloud('/admin/set-master', { userId, master: true });
+        result = r.status === 200 && r.data.ok ? { ok: true } : { ok: false, error: r.data.error || `HTTP ${r.status}` };
+      } else {
+        const auth = require('./auth');
+        const users = auth.listUsers();
+        const u = users.find((x) => x.userId === userId);
+        if (!u) { result = { ok: false, error: 'no such user' }; }
+        else {
+          // local mode sets the flag on disk via the raw store
+          const fs = require('fs');
+          const file = require('path').join(process.env.ORACLE_DATA_DIR || require('path').join(__dirname, 'data'), 'users.json');
+          try {
+            const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const doc = raw.users.find((x) => x.userId === userId);
+            if (doc) { doc.master = true; fs.writeFileSync(file, JSON.stringify(raw, null, 2)); result = { ok: true }; }
+            else result = { ok: false, error: 'no such user' };
+          } catch (e) { result = { ok: false, error: String(e) }; }
+        }
+      }
+      if (result.ok) console.log(`${userId} is now a MASTER account: any device, any time, no lock.`);
       else { console.error('Failed:', result.error); process.exit(1); }
       break;
     }

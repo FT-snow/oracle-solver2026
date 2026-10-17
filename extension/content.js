@@ -719,7 +719,8 @@
       const payload = {
         question: data.question || '(question text not extracted)',
         choices: data.choices.map((c) => (typeof c === 'string' ? c : c.text)),
-        extractionFailed: false
+        extractionFailed: false,
+        attempt: parseInt(sessionStorage.getItem('auto_attempts') || '0', 10) || 0
       };
 
       log(`Posting question: "${payload.question.slice(0, 60)}..." (${payload.choices.length} choices)`);
@@ -1044,25 +1045,29 @@
   // --- Score / Results Page Handlers ---
   async function handleScoreScreen() {
     const text = bodyText();
+    const href = (typeof location !== 'undefined' && location.href) || '';
 
-    // Loose wording exists everywhere (e.g. section lists showing
-    // "Assessment: Complete ✓") — require real score-screen evidence and
-    // explicitly exclude section/outline list pages, or we redirect forever.
+    // The course outline page itself can show "Score: 73%" section rows —
+    // never treat an outline URL as a score screen, or we reload it forever.
+    if (/f\?p=63000:14/.test(href)) return false;
+
+    // Real result pages: need strong completion wording AND a percentage,
+    // and must not be a section listing.
     const strong =
       /your\s+assessment\s+(is\s+)?(now\s+)?complete|assessment\s+(was\s+)?completed|congratulations/i.test(text);
     const numeric =
       /percentage\s+scored|score[^a-z]{0,12}\d+\s*%|mastery\s+score/i.test(text);
     const listPage = /not\s*started|in\s*progress/i.test(text) || /my\s*classes/i.test(text);
-    if (!(strong || numeric) || listPage) return false;
+    if (!(strong && (numeric || /assessment/i.test(text))) || listPage) return false;
 
-    // Bounce guard: never re-navigate within 60s of the last auto-redirect.
+    // Bounce guard
     const lastNav = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
     if (Date.now() - lastNav < 60000) return false;
     sessionStorage.setItem('score_nav_at', String(Date.now()));
 
     // Auto-retake: if the score is below 100%, click the retake button (up to
-    // 3 attempts). The shared database now also contains feedback-corrected
-    // answers, so attempt 2+ approaches 100%.
+    // 5 attempts). Stale AI answers are ignored on retakes so the API can
+    // re-solve the ones it got wrong.
     const mPct = text.match(/(\d{1,3})\s*%/i);
     if (mPct) {
       const score = parseInt(mPct[1], 10);
@@ -1070,7 +1075,7 @@
       if (score >= 100) {
         sessionStorage.setItem('auto_attempts', '0');
         log('Score is 100% — continuing to the next section.');
-      } else if (attempts < 3) {
+      } else if (attempts < 5) {
         const retakeBtn = Array.from(
           document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
         ).filter(isVisible).find((b) => {
@@ -1079,7 +1084,7 @@
         });
         if (retakeBtn) {
           sessionStorage.setItem('auto_attempts', String(attempts + 1));
-          log(`Score ${score}% < 100% — auto-retaking (attempt ${attempts + 2}/4). Feedback-corrected answers are now in the database.`);
+          log(`Score ${score}% < 100% — auto-retaking (attempt ${attempts + 2}/6). Wrong AI answers will be re-solved against the API.`);
           return triggerNavClick(retakeBtn, `Auto-retake (score ${score}%)`, true);
         }
         sendDiag('score-low-no-retake-button', '', []);
@@ -1092,7 +1097,12 @@
 
     reportState('Navigating', 'Redirecting from Score Screen to Course Outline');
     const dest = await getTargetOutlineUrl();
-    log('Score/Results page detected. Redirecting to Course Outline in the same tab:', dest);
+    // Same-URL guard: do not "navigate" to the page we are already on — that
+    // reads as an endless reload to the user.
+    if (dest && href && dest.split('#')[0] === href.split('#')[0]) {
+      log('Score screen resolved but we are already at the target — no reload.');
+      return true;
+    }
     navigateTop(dest);
     return true;
   }
@@ -1204,9 +1214,10 @@
       document.querySelectorAll('a, button, [role="button"], tr[onclick]')
     ).filter(isVisible);
 
-    const candidates = [];
+    // Walk rows in DOM order — course sections are listed in course sequence,
+    // so the FIRST incomplete row is the one to open next.
+    let best = null;
     for (const el of clickables) {
-      // Find the most specific enclosing row that carries a status string.
       let container = el.closest('tr, li, article') || el.closest('.row, div.t-Report-row') || el;
       let statusText = norm(container.innerText || '');
       if (statusText.length > 400) {
@@ -1216,20 +1227,24 @@
       if (statusText.length > 400) continue;
 
       const s = statusText.toLowerCase();
-      if (/\bcompleted\b|100\s*%|passed|score\s*report/i.test(s)) continue; // finished — skip
-      let score = 0;
-      if (/in\s*progress|resume|continue/i.test(s)) score += 2;
-      if (/not\s*started/i.test(s)) score += 1;
-      if (score === 0) continue;
-      score -= Math.min(statusText.length / 200, 1); // prefer tighter rows
-      candidates.push({ el, score, statusText });
+      if (/\bcompleted\b|\bpassed\b|100\s*%|score\s*report/i.test(s)) continue; // finished — skip
+      // A section row carries a status: textual (Not Started / In Progress /
+      // Resume) or a progress percentage below 100.
+      const isSectionRow =
+        /not\s*started|in\s*progress|resume|continue/.test(s) ||
+        (/\b(\d{1,2})\s*%/.test(s) && parseInt((s.match(/\b(\d{1,2})\s*%/) || [])[1], 10) < 100);
+      if (!isSectionRow) continue;
+      best = { el, statusText };
+      break; // first incomplete section in course order wins
     }
 
-    if (!candidates.length) return false;
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
+    if (!best) return false;
     lastOutlineNavTime = Date.now();
-    log('Course outline: opening next section ->', best.statusText.slice(0, 80));
+    // Opening a NEW section: reset the auto-retake attempt counter for it.
+    try {
+      sessionStorage.setItem('auto_attempts', '0');
+    } catch (e) {}
+    log('Course outline: opening next incomplete section ->', best.statusText.slice(0, 80));
     return triggerNavClick(best.el, `Open next section: ${best.statusText.slice(0, 40)}`, true);
   }
 

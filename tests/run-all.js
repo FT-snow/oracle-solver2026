@@ -25,6 +25,7 @@ for (const scenario of ['pdf', 'startquiz', 'quiz', 'resolve', 'resolve-group', 
 run('db', [path.join(__dirname, 'db.test.js')]);
 run('auth', [path.join(__dirname, 'auth.test.js')]);
 run('relay', [path.join(__dirname, 'relay.test.js')]);
+run('popup-smoke', [path.join(__dirname, 'popup-smoke.test.js')]);
 
 console.log(`\n${results.length - failed}/${results.length} tests passed${failed ? ` — ${failed} FAILED` : ''}`);
 process.exit(failed ? 1 : 0);

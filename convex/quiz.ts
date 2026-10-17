@@ -51,7 +51,12 @@ function parseAnswerIndices(text: string, maxChoice: number): number[] | null {
   return indices.length ? indices : null;
 }
 
-async function askGemini(key: string, question: string, choices: string[]): Promise<number[] | null> {
+async function askGemini(
+  key: string,
+  question: string,
+  choices: string[],
+  prevFailed: boolean
+): Promise<number[] | null> {
   const chooseCountMatch = question.match(/choose\s+(one|two|three|four|five|\d+)/i);
   let instruction = "Respond ONLY with the option number (e.g. 1).";
   if (chooseCountMatch) {
@@ -62,7 +67,9 @@ async function askGemini(key: string, question: string, choices: string[]): Prom
 
   const prompt = `You are an expert Oracle DBA taking an official Oracle Academy final exam. Accuracy is critical.
 Instructions: ${instruction} Return ONLY the option number(s) - digits and commas, no words, no explanation.
-Tips: read every choice fully; prefer precise Oracle terminology; if unsure, choose the most canonical answer.
+Tips: read every choice fully; prefer precise Oracle terminology; if unsure, choose the most canonical answer.${
+    prevFailed ? "\nIMPORTANT: this question was answered INCORRECTLY in the previous attempt. Reconsider every option carefully before answering." : ""
+  }
 
 Question:
 ${question.replace(/Question\s+\d+\s+of\s+\d+/i, "").trim()}
@@ -79,7 +86,7 @@ Answer (number only):`;
     if (Date.now() > deadline) break;
     const payload = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 200, temperature: 0.0 }
+      generationConfig: { maxOutputTokens: 200, temperature: prevFailed ? 0.45 : 0.0 }
     });
     // Try header auth first (classic keys), fall back to URL auth (newer
     // AI Studio keys occasionally behave differently).
@@ -121,12 +128,18 @@ export const solveViaGemini = internalAction({
     choices: v.array(v.string()),
     key: v.union(v.string(), v.null()),
     userId: v.string(),
+    prevFailed: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     if (!args.key || args.choices.length < 2) {
       return { ns: null as number[] | null, source: "none" as string };
     }
-    const ns = await askGemini(args.key, args.question, args.choices);
+    const ns = await askGemini(
+      args.key,
+      args.question,
+      args.choices,
+      args.prevFailed === true
+    );
     if (!ns) return { ns: null as number[] | null, source: "ai-failed" as string };
 
     // Remember it: everyone gets a 0 ms hit next time.
