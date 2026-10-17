@@ -227,12 +227,76 @@
     return Date.now() - lastNavActionTime > CONFIG.NAV_COOLDOWN_MS;
   }
 
+  // --- Dead-loop click guard ---------------------------------------------------
+  // It used to be possible to re-click one unresponsive button forever, and
+  // because every click scrollIntoView'd, the page would keep yanking back to
+  // it (feeling like "the page won't scroll"). Now: track clicks per target
+  // signature; if the page is unchanged after several attempts, back off 60s.
+  const clickGuard = new Map();
+  let clickGuardUrl = '';
+
+  function bodyTextHash() {
+    const t = String(bodyText() || '').slice(0, 500);
+    let h = 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) & 0xffff;
+    return h;
+  }
+
+  function targetSig(el, description) {
+    let top = 0;
+    try {
+      const r = el.getBoundingClientRect();
+      top = Math.round((r.top || 0) / 60);
+    } catch (e) {}
+    return (
+      (norm(el.innerText || el.value || '').slice(0, 40) || description.slice(0, 30)) +
+      '|' + (el.tagName || '') + '|' + top
+    );
+  }
+
+  // Returns null (do not click) or { first: boolean }.
+  function shouldClick(el, description) {
+    const href = (typeof location !== 'undefined' && location.href) || '';
+    if (href !== clickGuardUrl) {
+      clickGuard.clear();
+      clickGuardUrl = href;
+    }
+    const sig = targetSig(el, description);
+    const now = Date.now();
+    let g = clickGuard.get(sig);
+    if (g && g.blockUntil > now) return null;
+    if (!g) {
+      g = { count: 0, firstAt: now, textHashAtFirst: bodyTextHash(), blockUntil: 0 };
+      clickGuard.set(sig, g);
+    }
+    g.count++;
+    if (g.count >= 4 && now - g.firstAt < 15000 && bodyTextHash() === g.textHashAtFirst) {
+      g.blockUntil = now + 60000;
+      warn('Target unresponsive after 4 clicks with no page change — backing off 60s:', description);
+      reportState('Backoff', description + ' had no effect');
+      return null;
+    }
+    if (bodyTextHash() !== g.textHashAtFirst) {
+      // Page changed since we started — reset the window.
+      g.count = 1;
+      g.firstAt = now;
+      g.textHashAtFirst = bodyTextHash();
+    }
+    return { first: g.count === 1 };
+  }
+
   function triggerNavClick(el, description, ignoreCooldown = false) {
     if (!el || (!ignoreCooldown && !canClickNav()) || !isVisible(el)) return false;
+
+    const guard = shouldClick(el, description);
+    if (!guard) return false;
+
     lastNavActionTime = Date.now();
     log(`[Action: ${description}] Clicking:`, el);
     reportState('Navigating', `${description}: ${norm(el.innerText || el.value || '')}`);
-    safeScrollIntoView(el);
+    // Scroll only on the first attempt of a target — repeated scrolling is
+    // what made pages feel "stuck and unscrollable".
+    if (guard.first) safeScrollIntoView(el);
 
     const href = el.getAttribute ? el.getAttribute('href') : null;
     if (href && href.startsWith('javascript:')) {
@@ -879,14 +943,21 @@
   // --- Score / Results Page Handlers ---
   async function handleScoreScreen() {
     const text = bodyText();
-    const isScorePage =
-      /percentage\s+scored/i.test(text) ||
-      /note\s+your\s+score/i.test(text) ||
-      /mastery\s+score/i.test(text) ||
-      /assessment\s+complete/i.test(text) ||
-      /congratulations/i.test(text);
 
-    if (!isScorePage) return false;
+    // Loose wording exists everywhere (e.g. section lists showing
+    // "Assessment: Complete ✓") — require real score-screen evidence and
+    // explicitly exclude section/outline list pages, or we redirect forever.
+    const strong =
+      /your\s+assessment\s+(is\s+)?(now\s+)?complete|assessment\s+(was\s+)?completed|congratulations/i.test(text);
+    const numeric =
+      /percentage\s+scored|score[^a-z]{0,12}\d+\s*%|mastery\s+score/i.test(text);
+    const listPage = /not\s*started|in\s*progress/i.test(text) || /my\s*classes/i.test(text);
+    if (!(strong || numeric) || listPage) return false;
+
+    // Bounce guard: never re-navigate within 60s of the last auto-redirect.
+    const lastNav = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
+    if (Date.now() - lastNav < 60000) return false;
+    sessionStorage.setItem('score_nav_at', String(Date.now()));
 
     reportState('Navigating', 'Redirecting from Score Screen to Course Outline');
     const dest = await getTargetOutlineUrl();
@@ -1139,7 +1210,7 @@
     if (stuckMs > T3 && !quizWatch.reloadQueued) {
       quizWatch.reloadQueued = true;
       const lastReload = parseInt(sessionStorage.getItem('quiz_reload_at') || '0', 10);
-      if (Date.now() - lastReload > 90000) {
+      if (Date.now() - lastReload > 300000) {
         sessionStorage.setItem('quiz_reload_at', String(Date.now()));
         warn(`Question stuck >${T3 / 1000}s — reloading the page once to recover.`);
         location.reload();
