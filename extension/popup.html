@@ -86,6 +86,10 @@
     .switch input:checked + .slider::before { transform: translateX(14px); background: var(--accent); }
     footer { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10px; color: var(--muted); }
     .hidden { display: none; }
+    .apikey-block { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-top: 12px; }
+    .ghost.small { font-size: 11px; padding: 5px 9px; width: 100%; text-align: left; }
+    .key-steps { margin: 8px 0 0 18px; font-size: 11.5px; color: var(--muted); }
+    .key-steps li { margin: 3px 0; }
   </style>
 </head>
 <body>
@@ -130,6 +134,27 @@
         <span class="slider"></span>
       </label>
     </div>
+
+    <div class="apikey-block">
+      <div class="t-label" style="padding-bottom:2px">Gemini API key</div>
+      <div style="font-size:11px;color:var(--muted)" id="keyState">checking…</div>
+      <div class="collapsible">
+        <button type="button" class="ghost small" id="keyHelpToggle">How do I get a free key?</button>
+        <ol id="keyHelp" class="hidden key-steps">
+          <li>Open <b>aistudio.google.com</b> in a new tab</li>
+          <li>Sign in with your Google account</li>
+          <li>Click <b>Get API key</b> → <b>Create API key</b></li>
+          <li>Copy the key — it starts with <b>AIza…</b></li>
+          <li>Paste it below and press Save</li>
+        </ol>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <input id="apiInput" type="password" placeholder="AIza…" style="flex:1;margin-top:0" spellcheck="false" autocomplete="off" />
+        <button type="button" id="saveKey" class="ghost small" style="width:auto;padding:8px 12px;margin-top:0">Save</button>
+      </div>
+      <div class="msg" id="keyMsg"></div>
+    </div>
+
     <button type="button" class="ghost" id="logoutBtn">Sign out</button>
   </div>
 

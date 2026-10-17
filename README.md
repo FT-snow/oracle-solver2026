@@ -56,6 +56,13 @@ shared database, and access locked to issued credentials (one device each).
 
 ## Setup (owner — one time)
 
+> **Status: DEPLOYED — this section is informational only.** The Convex backend
+> is already live at `https://sleek-oyster-317.convex.site` with the shared
+> answer database seeded (1,721 questions). The local `.env` holds
+> `ADMIN_SECRET` and the accounts (`owner` = admin, `owner-cli` = for auto.js).
+> To add a friend: `node admin.js add-user <name>`. To redeploy later, follow
+> `convex/README.md`.
+
 ### 1. Configure
 
 ```bash
@@ -65,18 +72,18 @@ cp .env.example .env
 Fill in:
 
 - `GEMINI_API_KEY` — your key(s); comma-separate `GEMINI_API_KEYS` for rotation
-- `CONVEX_URL` — your Convex HTTP actions URL (e.g. `https://sleek-lemur-918.convex.site`)
-- `ADMIN_SECRET` — the same value you set in Convex (below)
-- `AUTH_USER` / `AUTH_PASS` — a **dedicated CLI account** auto.js logs in with
+- `CONVEX_URL` — your Convex HTTP actions URL (already filled: `https://sleek-oyster-317.convex.site`)
+- `ADMIN_SECRET` — the deployment admin secret (already filled)
+- `AUTH_USER` / `AUTH_PASS` — the **dedicated CLI account** auto.js logs in with
   (device binding means it must not be the same account you use in the browser)
 
-### 2. Deploy the cloud backend
+### 2. Deploy the cloud backend (reference — already done)
 
 ```bash
 npm install
-npx convex dev        # or: npx convex deploy
-openssl rand -hex 24
-npx convex env set ADMIN_SECRET <that-value>   # same value goes in .env
+CONVEX_DEPLOYMENT=dev:sleek-lemur-918 npx convex deploy --yes
+CONVEX_DEPLOYMENT=dev:sleek-lemur-918 npx convex env set ADMIN_SECRET <value>          # dev
+CONVEX_DEPLOYMENT=dev:sleek-lemur-918 npx convex env set ADMIN_SECRET <value> --prod   # prod
 npm run seed:convex   # imports the 1,721 cached answers into the cloud DB
 ```
 

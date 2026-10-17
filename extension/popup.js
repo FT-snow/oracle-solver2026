@@ -86,5 +86,56 @@ toggle.addEventListener('change', () => {
   chrome.storage.local.set({ autopilotEnabled: toggle.checked });
 });
 
+// ---- Per-user Gemini API key ------------------------------------------------
+
+function maskKey(k) {
+  return k.slice(0, 6) + '•••' + k.slice(-4);
+}
+
+async function refreshKey() {
+  try {
+    const me = await chrome.runtime.sendMessage({ type: 'RELAY_FETCH', method: 'GET', path: '/me' });
+    if (me && me.ok && me.status === 200 && me.body && me.body.ok) {
+      $('keyState').innerHTML = me.body.hasKey
+        ? 'configured — <span style="color:var(--accent)">your key will be used automatically</span>'
+        : 'not set — the solver needs one key saved here (or in the operator .env)';
+    } else {
+      $('keyState').textContent = me && me.status === 401 ? 'sign in first' : 'relay offline';
+    }
+  } catch (e) {
+    $('keyState').textContent = 'relay offline';
+  }
+}
+
+$('keyHelpToggle').addEventListener('click', () => {
+  $('keyHelp').classList.toggle('hidden');
+});
+
+$('saveKey').addEventListener('click', async () => {
+  const key = $('apiInput').value.trim();
+  const msg = $('keyMsg');
+  msg.className = 'msg';
+  if (!key.startsWith('AIza') || key.length < 30) {
+    msg.className = 'msg err';
+    msg.textContent = 'That does not look like a Gemini key — it should start with AIza…';
+    return;
+  }
+  msg.textContent = 'Saving…';
+  const res = await chrome.runtime.sendMessage({ type: 'RELAY_FETCH', method: 'POST', path: '/me/set-key', body: { geminiKey: key } });
+  if (res && res.ok && res.status === 200 && res.body && res.body.ok) {
+    msg.className = 'msg ok';
+    msg.textContent = 'Key saved for your account. New questions outside the database will use it.';
+    $('apiInput').value = '';
+    refreshKey();
+  } else {
+    msg.className = 'msg err';
+    msg.textContent = (res && res.body && res.body.error) || 'Save failed — is the relay running?';
+  }
+});
+
 refresh();
-setInterval(refresh, 5000);
+setInterval(() => {
+  refresh();
+  refreshKey();
+}, 5000);
+refreshKey();

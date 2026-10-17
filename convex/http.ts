@@ -1,8 +1,6 @@
-"use node";
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import crypto from "node:crypto";
 
 // Cloud access-control + shared answer-database API.
 //
@@ -28,9 +26,8 @@ import crypto from "node:crypto";
 //   POST /admin/seed        { items: [{ question, answerTexts }] }  (admin)
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const SEP = "\u00a7";
 
-function cleanKey(q: string): string {
+export function cleanKey(q: string): string {
   return String(q || "")
     .replace(/Question\s+\d+\s+of\s+\d+/gi, "")
     .replace(/[\r\n]+/g, " ")
@@ -39,25 +36,28 @@ function cleanKey(q: string): string {
     .toLowerCase();
 }
 
-function sha256(s: string): string {
-  return crypto.createHash("sha256").update(String(s)).digest("hex");
+// Web Crypto is available in the default isolate (no node:crypto here).
+async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(s)));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-function hashPassword(pw: string): string {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(String(pw), salt, 32).toString("hex");
-  return `${salt}:${hash}`;
+function randomToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-function verifyPassword(pw: string, stored: string): boolean {
-  try {
-    const [salt, hash] = String(stored || "").split(":");
-    if (!salt || !hash) return false;
-    const test = crypto.scryptSync(String(pw), salt, 32).toString("hex");
-    return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(test, "hex"));
-  } catch {
-    return false;
-  }
+// Constant-time string comparison (hex digests, same length).
+function ctEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 
 function corsHeaders(): Record<string, string> {
@@ -86,25 +86,21 @@ function str(v: unknown, max = 2000): string {
   return typeof v === "string" ? v.slice(0, max) : "";
 }
 
-// Admin guard: constant-time-ish comparison on hashes.
-function isAdmin(req: Request): boolean {
+// Admin guard: constant-time comparison of hashed secrets (async: Web Crypto).
+async function isAdmin(req: Request): Promise<boolean> {
   const expected = process.env.ADMIN_SECRET || "";
   const provided = req.headers.get("x-admin-secret") || "";
   if (!expected || !provided) return false;
-  try {
-    return crypto.timingSafeEqual(Buffer.from(sha256(provided)), Buffer.from(sha256(expected)));
-  } catch {
-    return false;
-  }
+  return ctEqual(await sha256Hex(provided), await sha256Hex(expected));
 }
 
 // Bearer-token guard -> { ok, userId } (device id checked when provided).
-async function isTokenValid(ctxPlus: { runQuery: (ref: unknown, args: unknown) => Promise<unknown> }, req: Request): Promise<{ ok: boolean; userId?: string }> {
+async function isTokenValid(ctx: { runQuery: (ref: unknown, args: unknown) => Promise<unknown> }, req: Request): Promise<{ ok: boolean; userId?: string }> {
   const auth = req.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   if (!token) return { ok: false };
   try {
-    const user = (await ctxPlus.runQuery(internal.auth.getUserByTokenHash, { tokenHash: sha256(token) })) as {
+    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash: await sha256Hex(token) })) as {
       disabled?: boolean;
       tokenExpiresAt?: number;
       userId: string;
@@ -118,7 +114,7 @@ async function isTokenValid(ctxPlus: { runQuery: (ref: unknown, args: unknown) =
 }
 
 async function authenticate(ctxPlus: { runQuery: (ref: unknown, args: unknown) => Promise<unknown> }, req: Request): Promise<{ ok: boolean; userId?: string; via?: string }> {
-  if (isAdmin(req)) return { ok: true, userId: "admin", via: "admin" };
+  if (await isAdmin(req)) return { ok: true, userId: "admin", via: "admin" };
   const t = await isTokenValid(ctxPlus, req);
   if (t.ok) return { ok: true, userId: t.userId, via: "token" };
   return { ok: false };
@@ -152,7 +148,8 @@ http.route({
       device?: { id: string; label: string; boundAt: number };
     } | null;
     if (!user || user.disabled) return json({ ok: false, code: "invalid_credentials" }, 401);
-    if (!verifyPassword(password, user.passwordHash)) return json({ ok: false, code: "invalid_credentials" }, 401);
+    const pwOk = (await ctx.runAction(internal.nodeauth.verifyPassword, { password, stored: user.passwordHash })) as boolean;
+    if (!pwOk) return json({ ok: false, code: "invalid_credentials" }, 401);
 
     if (user.device && user.device.id && user.device.id !== deviceId) {
       return json(
@@ -167,7 +164,7 @@ http.route({
       );
     }
 
-    const token = crypto.randomBytes(32).toString("hex");
+    const token = randomToken();
     const now = Date.now();
     const expiresAt = now + TOKEN_TTL_MS;
     await ctx.runMutation(internal.auth.bindDeviceAndToken, {
@@ -175,7 +172,7 @@ http.route({
       device: user.device
         ? { id: user.device.id, label: user.device.label, boundAt: user.device.boundAt }
         : { id: deviceId, label: deviceLabel, boundAt: now },
-      tokenHash: sha256(token),
+      tokenHash: await sha256Hex(token),
       tokenExpiresAt: expiresAt,
       lastLoginAt: now,
     });
@@ -184,14 +181,13 @@ http.route({
 });
 
 http.route({
-  path: "/auth/verify",
-  method: "POST",
+  path: "/auth/verify",  method: "POST",
   handler: httpAction(async (ctx, req) => {
     const body = await readJson(req);
     const token = str(body.token, 200).trim();
     const deviceId = str(body.deviceId, 120).trim();
     if (!token) return json({ ok: false, code: "missing_token" }, 400);
-    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash: sha256(token) })) as {
+    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash: await sha256Hex(token) })) as {
       disabled?: boolean;
       tokenExpiresAt?: number;
       userId: string;
@@ -211,8 +207,70 @@ http.route({
   handler: httpAction(async (ctx, req) => {
     const body = await readJson(req);
     const token = str(body.token, 200).trim();
-    if (token) await ctx.runMutation(internal.auth.clearToken, { tokenHash: sha256(token) });
+    if (token) await ctx.runMutation(internal.auth.clearToken, { tokenHash: await sha256Hex(token) });
     return json({ ok: true });
+  }),
+});
+
+// ---- Per-user Gemini API key ----------------------------------------------
+// Every account can carry its own key (set by the user or by an admin).
+// GET  /me          -> who am I, is a key configured?
+// POST /me/set-key  -> set MY key (bearer token required)
+// GET  /me/api-key  -> MY key (bearer token required; used by auto.js)
+// POST /admin/set-user-key -> set any user's key (admin secret required)
+
+http.route({
+  path: "/me",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    const user = await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId! });
+    if (!user) return json({ ok: false, error: "no such user" }, 404);
+    return json({ ok: true, userId: user.userId, role: user.role, hasKey: !!user.geminiKey });
+  }),
+});
+
+http.route({
+  path: "/me/api-key",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    const user = await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId! });
+    return json({ ok: true, hasKey: !!(user && user.geminiKey), key: user && user.geminiKey ? user.geminiKey : null });
+  }),
+});
+
+http.route({
+  path: "/me/set-key",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    const key = str(body.geminiKey ?? body.key, 200).trim();
+    if (!key) return json({ ok: false, error: "geminiKey required" }, 400);
+    if (!key.startsWith("AIza") || key.length < 30) {
+      return json({ ok: false, error: "That does not look like a Gemini API key (keys from Google AI Studio start with AIza…)." }, 400);
+    }
+    return json(await ctx.runMutation(internal.auth.setGeminiKey, { userId: t.userId!, geminiKey: key }));
+  }),
+});
+
+http.route({
+  path: "/admin/set-user-key",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    if (!(await isAdmin(req))) return json({ ok: false, error: "admin secret required" }, 401);
+    const body = await readJson(req);
+    const userId = str(body.userId, 120).trim().toLowerCase();
+    const key = str(body.geminiKey ?? body.key, 200).trim();
+    if (!userId) return json({ ok: false, error: "userId required" }, 400);
+    if (key && !(key.startsWith("AIza") && key.length >= 30)) {
+      return json({ ok: false, error: "That does not look like a Gemini API key (keys from Google AI Studio start with AIza…)." }, 400);
+    }
+    return json(await ctx.runMutation(internal.auth.setGeminiKey, { userId, geminiKey: key }));
   }),
 });
 
@@ -287,7 +345,8 @@ adminRoute("/admin/users", "POST", async (ctx, _req, body) => {
   const password = str(body.password, 200);
   const role = str(body.role, 10) || "user";
   if (!userId || !password) return json({ ok: false, error: "userId and password required" }, 400);
-  const result = await ctx.runMutation(internal.auth.createUser, { userId, passwordHash: hashPassword(password), role });
+  const passwordHash = (await ctx.runAction(internal.nodeauth.hashPassword, { password })) as string;
+  const result = await ctx.runMutation(internal.auth.createUser, { userId, passwordHash, role });
   return json(result, result.ok ? 200 : 409);
 });
 
@@ -303,7 +362,8 @@ adminRoute("/admin/set-password", "POST", async (ctx, _req, body) => {
   const userId = str(body.userId, 120);
   const password = str(body.password, 200);
   if (!userId || !password) return json({ ok: false, error: "userId and password required" }, 400);
-  return json(await ctx.runMutation(internal.auth.setPasswordHash, { userId, passwordHash: hashPassword(password) }));
+  const passwordHash = (await ctx.runAction(internal.nodeauth.hashPassword, { password })) as string;
+  return json(await ctx.runMutation(internal.auth.setPasswordHash, { userId, passwordHash }));
 });
 
 adminRoute("/admin/set-disabled", "POST", async (ctx, _req, body) => {

@@ -125,6 +125,17 @@ async function verifyWithCloud(token, deviceId) {
 }
 
 async function verifyAuth(req) {
+  // Admin secret header (admin.js / server-side calls) -> full access.
+  const adminSecret = process.env.ADMIN_SECRET || '';
+  const providedSecret = req.headers['x-admin-secret'] || '';
+  if (adminSecret && providedSecret) {
+    try {
+      const cryptoOk =
+        providedSecret.length === adminSecret.length &&
+        crypto.timingSafeEqual(Buffer.from(providedSecret), Buffer.from(adminSecret));
+      if (cryptoOk) return { ok: true, userId: 'admin' };
+    } catch (e) {}
+  }
   const AUTH_MODE = currentAuthMode();
   if (AUTH_MODE === 'open') return { ok: true };
   const token = bearerOf(req);
@@ -276,6 +287,48 @@ const server = http.createServer(async (req, res) => {
         offset: url.searchParams.get('offset') || undefined
       });
       return send(res, 200, result);
+    }
+
+    // ---- Per-user settings (Gemini key) -------------------------------------
+    if (pathName === '/me' || pathName === '/me/api-key' || pathName === '/me/set-key' || pathName === '/admin/set-user-key') {
+      const auth = await verifyAuth(req);
+      if (!auth.ok) return send(res, auth.status, auth.body);
+      const mode = currentAuthMode();
+      if (mode === 'cloud') {
+        const r = await fetch(`${CONVEX_URL}${pathName}`, {
+          method: req.method,
+          headers: { 'Content-Type': 'application/json', ...authHeadersOf(req) },
+          body: req.method === 'POST' ? JSON.stringify(await readBody(req)) : undefined,
+          signal: AbortSignal.timeout(8000)
+        });
+        const data = await r.text();
+        cors(res);
+        res.writeHead(r.status, { 'Content-Type': 'application/json' });
+        res.end(data);
+        return;
+      }
+      // Local-mode fallback (single-user machine)
+      const settings = require('./settings');
+      if (req.method === 'GET' && pathName === '/me') {
+        return send(res, 200, { ok: true, userId: auth.userId || 'local', role: 'admin', hasKey: !!settings.getGeminiKey() });
+      }
+      if (req.method === 'GET' && pathName === '/me/api-key') {
+        return send(res, 200, { ok: true, hasKey: !!settings.getGeminiKey(), key: settings.getGeminiKey() });
+      }
+      if (req.method === 'POST' && pathName === '/me/set-key') {
+        const body = await readBody(req);
+        const key = String(body.geminiKey || body.key || '').trim();
+        if (!key) return send(res, 400, { ok: false, error: 'geminiKey required' });
+        settings.setGeminiKey(key);
+        return send(res, 200, { ok: true, mode: 'local' });
+      }
+      if (req.method === 'POST' && pathName === '/admin/set-user-key') {
+        const body = await readBody(req);
+        const key = String(body.geminiKey || body.key || '').trim();
+        if (!key) return send(res, 400, { ok: false, error: 'geminiKey required' });
+        settings.setGeminiKey(key);
+        return send(res, 200, { ok: true, mode: 'local' });
+      }
     }
 
     // ---- Gated quiz endpoints ----------------------------------------------

@@ -332,7 +332,22 @@ export default function Page() {
                 </pre>
               </div>
               <div className="codeblock">
-                <div className="cb-head"><span>owner: browse the answers</span><span>anytime</span></div>
+                <div className="cb-head"><span>3 · get a free Gemini key</span><span>google ai studio</span></div>
+                <pre>
+                  <span className="c"># takes one minute, no billing needed</span>{'\n'}
+                  1. open <span className="g">aistudio.google.com</span>{'\n'}
+                  2. sign in with your Google account{'\n'}
+                  3. click <span className="g">Get API key</span> → <span className="g">Create API key</span>{'\n'}
+                  4. copy the key — it starts with <span className="g">AIza…</span>{'\n'}
+                  5. paste it in the extension popup (after sign-in){'\n'}
+                  {'  '}or give it to the operator for the .env{'\n'}
+                  {'\n'}
+                  <span className="c"># note: database hits answer in 0 ms and</span>{'\n'}
+                  <span className="c"># the AI is only called for unseen questions</span>
+                </pre>
+              </div>
+              <div className="codeblock" style={{ marginTop: 16 }}>
+                <div className="cb-head"><span>4 · browse the answers</span><span>anytime</span></div>
                 <pre>
                   <span className="g">$</span> node answers.js &quot;rollback&quot;{'\n'}
                   <span className="g">$</span> node answers.js --stats{'\n'}
@@ -408,8 +423,6 @@ export default function Page() {
           </div>
           <div>
             <a href={DOWNLOAD} download>download extension</a>
-            <br />
-            <a href="https://github.com/futuretonystark124/oracle-solver2026" target="_blank" rel="noreferrer">source on github</a>
           </div>
         </div>
         <div className="wrap">

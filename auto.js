@@ -194,6 +194,22 @@ async function main() {
   console.log('Connected to relay on 127.0.0.1:8787.');
   await ensureAuth();
 
+  // Per-user Gemini key (set via the extension popup or admin.js) takes
+  // priority over the .env key. Order: [personal key, ...env keys].
+  try {
+    const me = await request('GET', '/me');
+    if (me.status === 200 && me.body && me.body.ok && me.body.hasKey) {
+      const k = await request('GET', '/me/api-key');
+      const personalKey = k.body && k.body.key;
+      if (personalKey && !GEMINI_API_KEYS.includes(personalKey)) {
+        GEMINI_API_KEYS.unshift(personalKey);
+        console.log(`Using the Gemini key configured for your account (${String(me.body.userId)}).`);
+      }
+    }
+  } catch (e) {
+    /* personal key unavailable — .env key still applies */
+  }
+
   const stats = db.stats();
   console.log(`Answer database ready: ${stats.total} questions (${Object.entries(stats.bySource).map(([k, v]) => `${k}: ${v}`).join(', ') || 'empty'}).`);
   console.log('Waiting for questions...');

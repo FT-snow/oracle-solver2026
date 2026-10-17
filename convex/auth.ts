@@ -134,6 +134,21 @@ export const setDisabled = internalMutation({
   },
 });
 
+export const setGeminiKey = internalMutation({
+  args: { userId: v.string(), geminiKey: v.string() },
+  handler: async (ctx, args) => {
+    const norm = args.userId.trim().toLowerCase();
+    const doc = await ctx.db
+      .query("users")
+      .withIndex("by_userId", (q) => q.eq("userId", norm))
+      .unique();
+    if (!doc) return { ok: false as const, error: "no such user" };
+    const key = args.geminiKey.trim();
+    await ctx.db.patch(doc._id, { geminiKey: key ? key : undefined });
+    return { ok: true as const };
+  },
+});
+
 export const removeUser = internalMutation({
   args: { userId: v.string() },
   handler: async (ctx, args) => {

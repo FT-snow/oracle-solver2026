@@ -127,6 +127,23 @@ async function main() {
       else { console.error('Failed:', result.error); process.exit(1); }
       break;
     }
+    case 'set-key': {
+      const userId = positional[0];
+      const key = positional[1];
+      if (!userId || !key) { console.error('Usage: node admin.js set-key <userId> <geminiApiKey>'); process.exit(1); }
+      if (!key.startsWith('AIza')) { console.error('That does not look like a Gemini key (AI Studio keys start with AIza…).'); process.exit(1); }
+      let result;
+      if (CONVEX_URL) {
+        const r = await cloud('/admin/set-user-key', { userId, geminiKey: key });
+        result = r.status === 200 && r.data.ok ? { ok: true } : { ok: false, error: r.data.error || `HTTP ${r.status}` };
+      } else {
+        require('./settings').setGeminiKey(key);
+        result = { ok: true, note: 'local mode: key stored for this machine' };
+      }
+      if (result.ok) console.log(`Gemini key saved for "${userId}"${result.note ? ` (${result.note})` : ''} — their solver will use it automatically.`);
+      else { console.error('Failed:', result.error); process.exit(1); }
+      break;
+    }
     case 'remove': {
       const userId = positional[0];
       if (!userId) { console.error('userId required'); process.exit(1); }

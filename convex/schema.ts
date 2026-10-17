@@ -21,6 +21,7 @@ export default defineSchema({
     ),
     tokenHash: v.optional(v.string()), // sha256(token)
     tokenExpiresAt: v.optional(v.number()),
+    geminiKey: v.optional(v.string()), // per-user Gemini API key (set by user or admin)
     createdAt: v.number(),
     lastLoginAt: v.optional(v.number()),
   })
