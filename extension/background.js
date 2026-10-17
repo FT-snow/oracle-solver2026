@@ -131,13 +131,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       let who = null;
       if (session && session.token) {
         try {
-          const res = await fetch(server + '/whoami', {
+          const res = await fetch(server + '/me', {
             headers: { Authorization: `Bearer ${session.token}`, 'X-Device-Id': deviceId },
             signal: AbortSignal.timeout(4000)
           });
-          who = res.ok ? await res.json() : null;
+          const me = res.ok ? await res.json() : null;
+          who = me && me.ok ? me : null;
         } catch (e) {
-          who = null;
+          // Network hiccup — trust the stored session (token expiry is handled
+          // by the 401 path elsewhere) so the popup doesn't trap the user.
+          who = { userId: session.userId || null };
         }
       }
       sendResponse({

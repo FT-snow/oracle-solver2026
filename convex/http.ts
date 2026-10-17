@@ -130,6 +130,16 @@ http.route({
   ),
 });
 
+http.route({
+  path: "/whoami",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    return json({ ok: true, userId: t.userId, mode: "cloud" });
+  }),
+});
+
 // ---- Quiz flow (extension talks straight to the cloud — no local relay) -----
 
 http.route({

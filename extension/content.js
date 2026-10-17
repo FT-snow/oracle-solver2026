@@ -138,8 +138,9 @@
         authState.ok = true;
         return authState;
       }
-      const w = await api('GET', '/whoami');
-      authState.ok = w.status === 200 && !!(w.body && w.body.userId);
+      // /me doubles as an identity probe (exists on cloud + relay alike).
+      const w = await api('GET', '/me');
+      authState.ok = w.status === 200 && !!(w.body && w.body.ok && w.body.userId);
     } catch (e) {
       /* relay unreachable — keep last known state */
     }
