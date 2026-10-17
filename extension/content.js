@@ -508,15 +508,29 @@
     return m ? parseInt(m[1], 10) === parseInt(m[2], 10) : false;
   }
 
+  // Accepts every wording Oracle has used for the finish button.
+  function isCompleteAssessmentText(txt) {
+    const t = norm(txt).toLowerCase();
+    if (!t) return false;
+    if (/complete( the)? assessment|submit( the)? assessment|finish( the)? assessment|end( the)? assessment|submit exam|finish exam/.test(t)) return true;
+    return t === 'complete assessment';
+  }
+
+  function isConfirmModalText(text) {
+    return (
+      /are\s+you\s+sure.*\?/i.test(text) && /submission|submit|assessment/i.test(text) ||
+      /submit\s+your\s+assessment\?/i.test(text) ||
+      /return\s+to\s+assessment/i.test(text) ||
+      /final\s+submission/i.test(text)
+    );
+  }
+
   function clickCompleteAssessmentButton() {
     const buttons = Array.from(
       document.querySelectorAll('button, a, input[type="button"], input[type="submit"]')
     ).filter(isVisible);
 
-    const btn = buttons.find((b) => {
-      const txt = norm(b.innerText || b.value || '').toLowerCase();
-      return txt === 'complete assessment' || txt.includes('complete assessment');
-    });
+    const btn = buttons.find((b) => isCompleteAssessmentText(b.innerText || b.value || ''));
 
     if (btn) {
       log('Clicking Complete Assessment button:', btn);
@@ -655,9 +669,13 @@
         }
 
         if (isLast) {
-          log('Last question answered! Pausing briefly before clicking Complete Assessment...');
-          await sleep(800);
-          await handleTopCompleteAssessment();
+          log('Last question answered! Waiting for the Complete Assessment button...');
+          // Give the page a moment to reveal the finish button, then act.
+          for (let attempt = 0; attempt < 12; attempt++) {
+            await sleep(500);
+            if (await handleConfirmCompleteModal()) break;
+            if (await handleTopCompleteAssessment()) break;
+          }
         }
       };
 
@@ -726,9 +744,7 @@
 
   async function handleConfirmCompleteModal() {
     const text = bodyText();
-    const isConfirmModalOpen =
-      /Are you sure you want to submit your assessment\?/i.test(text) ||
-      /Return to Assessment/i.test(text);
+    const isConfirmModalOpen = isConfirmModalText(text);
 
     if (!isConfirmModalOpen) return false;
 
@@ -751,8 +767,7 @@
         const cands = Array.from(cur.querySelectorAll('button, a, input[type="button"], [role="button"]')).filter(isVisible);
         completeBtn = cands.find((b) => {
           if (b === returnBtn) return false;
-          const txt = norm(b.innerText || b.value || '').toLowerCase();
-          return txt === 'complete assessment' || txt.includes('complete assessment');
+          return isCompleteAssessmentText(b.innerText || b.value || '');
         });
         cur = cur.parentElement;
       }
@@ -760,10 +775,7 @@
 
     // 2. Fallback: Find any Complete Assessment button NOT located in the top header
     if (!completeBtn) {
-      const candidates = allButtons.filter((b) => {
-        const txt = norm(b.innerText || b.value || '').toLowerCase();
-        return txt === 'complete assessment' || txt.includes('complete assessment');
-      });
+      const candidates = allButtons.filter((b) => isCompleteAssessmentText(b.innerText || b.value || ''));
       completeBtn = candidates.find((b) => {
         const inHeader = b.closest('header, #t_Header, .t-Header, .t-Breadcrumb-item, .top-nav');
         const rect = b.getBoundingClientRect();
@@ -799,15 +811,11 @@
 
     // Specifically target the top header/nav button first
     const topBtn = buttons.find((b) => {
-      const txt = norm(b.innerText || b.value || '').toLowerCase();
-      const isComplete = txt === 'complete assessment' || txt.includes('complete assessment');
+      const isComplete = isCompleteAssessmentText(b.innerText || b.value || '');
       const inHeader = b.closest('header, #t_Header, .t-Header, .t-Breadcrumb-item, .top-nav');
       const rect = b.getBoundingClientRect();
-      return isComplete && (inHeader || rect.top < 150);
-    }) || buttons.find((b) => {
-      const txt = norm(b.innerText || b.value || '').toLowerCase();
-      return txt === 'complete assessment';
-    });
+      return isComplete && (inHeader || rect.top < 220);
+    }) || buttons.find((b) => isCompleteAssessmentText(b.innerText || b.value || ''));
 
     if (topBtn) {
       log('Last question answered! Pausing briefly before clicking top Complete Assessment button...');
@@ -1120,27 +1128,33 @@
       return;
     }
     const stuckMs = Date.now() - quizWatch.firstSeen;
-    if (stuckMs < 20000 || Date.now() - lastNavActionTime < 3000) return;
+    // The last question is the riskiest: escalate much faster so the run
+    // never stalls at the finish line.
+    const isLast = checkIsLastQuestion();
+    const T1 = isLast ? 12000 : 20000;
+    const T2 = isLast ? 25000 : 45000;
+    const T3 = isLast ? 40000 : 75000;
+    if (stuckMs < T1 || Date.now() - lastNavActionTime < 3000) return;
 
-    if (stuckMs > 75000 && !quizWatch.reloadQueued) {
+    if (stuckMs > T3 && !quizWatch.reloadQueued) {
       quizWatch.reloadQueued = true;
       const lastReload = parseInt(sessionStorage.getItem('quiz_reload_at') || '0', 10);
       if (Date.now() - lastReload > 90000) {
         sessionStorage.setItem('quiz_reload_at', String(Date.now()));
-        warn('Question stuck for >75s — reloading the page once to recover.');
+        warn(`Question stuck >${T3 / 1000}s — reloading the page once to recover.`);
         location.reload();
         return;
       }
     }
-    if (stuckMs > 45000 && !quizWatch.altTried) {
+    if (stuckMs > T2 && !quizWatch.altTried) {
       quizWatch.altTried = true;
-      warn('Question stuck for >45s — trying alternate submit strategies.');
+      warn(`Question stuck >${T2 / 1000}s — trying alternate submit strategies.`);
       tryAlternateSubmit();
       return;
     }
     if (!quizWatch.submitRetried) {
       quizWatch.submitRetried = true;
-      warn('Question stuck for >20s — re-clicking Submit Answer.');
+      warn(`Question stuck >${T1 / 1000}s — re-clicking Submit Answer.`);
       clickSubmitAnswer();
     }
   }

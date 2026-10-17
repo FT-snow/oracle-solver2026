@@ -1,6 +1,28 @@
 import { internalQuery, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
+type SetArgs = { userId: string; geminiKey: string };
+
+async function setGeminiKeyImpl(ctx: any, args: SetArgs) {
+  const norm = args.userId.trim().toLowerCase();
+  const doc = await ctx.db
+    .query("users")
+    .withIndex("by_userId", (q: any) => q.eq("userId", norm))
+    .unique();
+  if (!doc) return { ok: false as const, error: "no such user" };
+  const key = args.geminiKey.trim();
+  if (key) {
+    try {
+      await ctx.db.patch(doc._id, { geminiKey: key });
+      return { ok: true as const, cleared: false as const };
+    } catch (e: any) {
+      return { ok: false as const, error: "patch failed: " + String(e?.message || e) };
+    }
+  }
+  await ctx.db.patch(doc._id, { geminiKey: undefined });
+  return { ok: true as const, cleared: true as const };
+}
+
 // Internal user operations used by the HTTP actions in http.ts.
 
 export const getByUserId = internalQuery({
@@ -136,17 +158,7 @@ export const setDisabled = internalMutation({
 
 export const setGeminiKey = internalMutation({
   args: { userId: v.string(), geminiKey: v.string() },
-  handler: async (ctx, args) => {
-    const norm = args.userId.trim().toLowerCase();
-    const doc = await ctx.db
-      .query("users")
-      .withIndex("by_userId", (q) => q.eq("userId", norm))
-      .unique();
-    if (!doc) return { ok: false as const, error: "no such user" };
-    const key = args.geminiKey.trim();
-    await ctx.db.patch(doc._id, { geminiKey: key ? key : undefined });
-    return { ok: true as const };
-  },
+  handler: async (ctx, args) => setGeminiKeyImpl(ctx, args),
 });
 
 export const removeUser = internalMutation({

@@ -115,9 +115,12 @@ $('saveKey').addEventListener('click', async () => {
   const key = $('apiInput').value.trim();
   const msg = $('keyMsg');
   msg.className = 'msg';
-  if (!key.startsWith('AIza') || key.length < 30) {
+  const looksValid =
+    (key.startsWith('AIza') && key.length >= 30) ||
+    (key.startsWith('AQ') && key.length >= 25);
+  if (!looksValid) {
     msg.className = 'msg err';
-    msg.textContent = 'That does not look like a Gemini key — it should start with AIza…';
+    msg.textContent = 'That does not look like a Google AI Studio key — it should start with AIza… or AQ.…';
     return;
   }
   msg.textContent = 'Saving…';

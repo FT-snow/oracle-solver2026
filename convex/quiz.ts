@@ -76,23 +76,35 @@ Answer:`;
 
   for (const model of GEMINI_MODELS) {
     if (Date.now() > deadline) break;
-    try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 200, temperature: 0.0 }
-        }),
-        signal: AbortSignal.timeout(6500),
-      });
-      if (!res.ok) continue; // try next model (rate limits, outages)
-      const data = await res.json();
-      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-      const indices = parseAnswerIndices(raw, choices.length);
-      if (indices) return indices;
-    } catch {
-      /* network hiccup — next model */
+    const payload = JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 200, temperature: 0.0 }
+    });
+    // Try header auth first (classic keys), fall back to URL auth (newer
+    // AI Studio keys occasionally behave differently).
+    const attempts = [
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`
+    ];
+    for (let a = 0; a < attempts.length; a++) {
+      if (Date.now() > deadline) break;
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (a === 0) headers["x-goog-api-key"] = key;
+        const res = await fetch(attempts[a], {
+          method: "POST",
+          headers,
+          body: payload,
+          signal: AbortSignal.timeout(6500),
+        });
+        if (!res.ok) continue; // (rate limit / auth style / outage -> next attempt)
+        const data = await res.json();
+        const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+        const indices = parseAnswerIndices(raw, choices.length);
+        if (indices) return indices;
+      } catch {
+        /* network hiccup — next attempt */
+      }
     }
   }
   return null;

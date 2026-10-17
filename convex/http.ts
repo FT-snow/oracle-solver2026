@@ -60,6 +60,13 @@ function ctEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// Both Google key formats: classic (AIza..., 39 chars) and the newer
+// AI Studio format (AQ..., variable length with dots).
+function isValidGeminiKey(key: string): boolean {
+  const k = String(key || "").trim();
+  return (k.startsWith("AIza") && k.length >= 30) || (k.startsWith("AQ") && k.length >= 25);
+}
+
 function corsHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json",
@@ -323,10 +330,10 @@ http.route({
     const t = await isTokenValid(ctx, req);
     if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
     const body = await readJson(req);
-    const key = str(body.geminiKey ?? body.key, 200).trim();
+    const key = str(body.geminiKey ?? body.key, 300).trim();
     if (!key) return json({ ok: false, error: "geminiKey required" }, 400);
-    if (!key.startsWith("AIza") || key.length < 30) {
-      return json({ ok: false, error: "That does not look like a Gemini API key (keys from Google AI Studio start with AIza…)." }, 400);
+    if (!isValidGeminiKey(key)) {
+      return json({ ok: false, error: "That does not look like a free Google AI Studio key (starts with AIza… or AQ….)." }, 400);
     }
     return json(await ctx.runMutation(internal.auth.setGeminiKey, { userId: t.userId!, geminiKey: key }));
   }),
@@ -339,10 +346,10 @@ http.route({
     if (!(await isAdmin(req))) return json({ ok: false, error: "admin secret required" }, 401);
     const body = await readJson(req);
     const userId = str(body.userId, 120).trim().toLowerCase();
-    const key = str(body.geminiKey ?? body.key, 200).trim();
+    const key = str(body.geminiKey ?? body.key, 300).trim();
     if (!userId) return json({ ok: false, error: "userId required" }, 400);
-    if (key && !(key.startsWith("AIza") && key.length >= 30)) {
-      return json({ ok: false, error: "That does not look like a Gemini API key (keys from Google AI Studio start with AIza…)." }, 400);
+    if (key && !isValidGeminiKey(key)) {
+      return json({ ok: false, error: "That does not look like a free Google AI Studio key (starts with AIza… or AQ….)." }, 400);
     }
     return json(await ctx.runMutation(internal.auth.setGeminiKey, { userId, geminiKey: key }));
   }),
@@ -407,7 +414,7 @@ function adminRoute(pathName: string, method: "GET" | "POST", handler: (ctx: any
     path: pathName,
     method,
     handler: httpAction(async (ctx, req) => {
-      if (!isAdmin(req)) return json({ ok: false, error: "admin secret required" }, 401);
+      if (!(await isAdmin(req))) return json({ ok: false, error: "admin secret required" }, 401);
       const body = method === "POST" ? await readJson(req) : {};
       return handler(ctx, req, body);
     }),
