@@ -766,14 +766,27 @@
           warn('No choice could be clicked — not submitting.');
         }
 
+        // Opportunistic learning: if Oracle reveals the correct answer in its
+        // feedback, store it so every future attempt (and the auto-retake)
+        // answers this question correctly.
+        if (!isLast) {
+          harvestFeedback(data.question, payload.choices);
+        }
+
         if (isLast) {
           blockLastQuestion(snippet);
           log('Last question answered! Waiting for the Complete Assessment button...');
+          let confirmed = false;
           // Give the page a moment to reveal the finish button, then act.
           for (let attempt = 0; attempt < 12; attempt++) {
             await sleep(500);
-            if (await handleConfirmCompleteModal()) break;
-            if (await handleTopCompleteAssessment()) break;
+            if (await handleConfirmCompleteModal()) { confirmed = true; break; }
+            if (await handleTopCompleteAssessment()) { confirmed = true; break; }
+          }
+          if (!confirmed) {
+            // Nothing worked — capture the real page state for diagnosis
+            // instead of guessing again.
+            sendDiag('lastq-no-finish', data.question, payload.choices);
           }
         }
       };
@@ -827,6 +840,59 @@
       await sleep(30);
       isSolvingQuiz = false;
     }
+  }
+
+  // --- Learn from Oracle's feedback + diagnostics capture ----------------------
+
+  function extractCorrectAnswer(text) {
+    let m = text.match(/correct\s+answer\s*(?:is)?\s*[:\-]?\s*["“]?([^\n]{2,160})/i);
+    if (m) return norm(m[1]).slice(0, 160);
+    m = text.match(/answer\s*[:\-]\s*([^\n]{2,160})/i);
+    if (m) return norm(m[1]).slice(0, 160);
+    const els = Array.from(
+      document.querySelectorAll('[class*="correct" i], [class*="answerKey" i], .correct-answer')
+    ).filter(isVisible);
+    for (const el of els) {
+      const t = norm(el.innerText || '');
+      if (t && t.length > 1 && !/your\s+answer/i.test(t)) return t.slice(0, 160);
+    }
+    return '';
+  }
+
+  async function harvestFeedback(question, choices) {
+    await sleep(2500);
+    try {
+      const text = bodyText();
+      if (isConfirmModalText(text)) return;
+      if (!/incorrect|wrong|not\s+correct/i.test(text)) return;
+      const correct = extractCorrectAnswer(text);
+      if (!correct || correct.length < 2) {
+        sendDiag('feedback-no-answer', question, choices);
+        return;
+      }
+      await api('POST', '/answers', { question, choices, answerTexts: [correct], source: 'feedback' });
+      log('Learned the correct answer from Oracle feedback — saved to the shared database.');
+    } catch (e) {}
+  }
+
+  async function sendDiag(kind, question, choices) {
+    try {
+      const buttons = Array.from(
+        document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]')
+      ).filter(isVisible)
+        .map((b) => norm(b.innerText || b.value || '').slice(0, 80))
+        .filter(Boolean)
+        .slice(0, 20);
+      await api('POST', '/diag', {
+        kind,
+        question: norm(question).slice(0, 300),
+        choices: (choices || []).map((c) => norm(c).slice(0, 120)).slice(0, 12),
+        url: ((typeof location !== 'undefined' && location.href) || '').slice(0, 300),
+        text: bodyText().slice(0, 2500),
+        buttons
+      });
+      log('Captured page diagnostics for', kind);
+    } catch (e) {}
   }
 
   // --- End of Quiz / Submit Assessment ---
@@ -993,6 +1059,36 @@
     const lastNav = parseInt(sessionStorage.getItem('score_nav_at') || '0', 10);
     if (Date.now() - lastNav < 60000) return false;
     sessionStorage.setItem('score_nav_at', String(Date.now()));
+
+    // Auto-retake: if the score is below 100%, click the retake button (up to
+    // 3 attempts). The shared database now also contains feedback-corrected
+    // answers, so attempt 2+ approaches 100%.
+    const mPct = text.match(/(\d{1,3})\s*%/i);
+    if (mPct) {
+      const score = parseInt(mPct[1], 10);
+      const attempts = parseInt(sessionStorage.getItem('auto_attempts') || '0', 10);
+      if (score >= 100) {
+        sessionStorage.setItem('auto_attempts', '0');
+        log('Score is 100% — continuing to the next section.');
+      } else if (attempts < 3) {
+        const retakeBtn = Array.from(
+          document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
+        ).filter(isVisible).find((b) => {
+          const t = norm(b.innerText || b.value || '').toLowerCase();
+          return /retake|try\s+again|re[\s-]??attempt|restart|new\s+attempt|take\s+(an|the)\s+assessment|attempt\s+again/i.test(t);
+        });
+        if (retakeBtn) {
+          sessionStorage.setItem('auto_attempts', String(attempts + 1));
+          log(`Score ${score}% < 100% — auto-retaking (attempt ${attempts + 2}/4). Feedback-corrected answers are now in the database.`);
+          return triggerNavClick(retakeBtn, `Auto-retake (score ${score}%)`, true);
+        }
+        sendDiag('score-low-no-retake-button', '', []);
+      } else {
+        warn(`Still below 100% after ${attempts + 1} attempts — moving on to the next section.`);
+        sessionStorage.setItem('auto_attempts', '0');
+        sendDiag('score-still-low', '', []);
+      }
+    }
 
     reportState('Navigating', 'Redirecting from Score Screen to Course Outline');
     const dest = await getTargetOutlineUrl();

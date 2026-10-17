@@ -60,8 +60,9 @@ async function askGemini(key: string, question: string, choices: string[]): Prom
     instruction = "Choose all correct option numbers separated by commas (e.g. 1,2,4).";
   }
 
-  const prompt = `Oracle Academy Exam Question.
-Instructions: ${instruction} Do not explain. Output option numbers only.
+  const prompt = `You are an expert Oracle DBA taking an official Oracle Academy final exam. Accuracy is critical.
+Instructions: ${instruction} Return ONLY the option number(s) - digits and commas, no words, no explanation.
+Tips: read every choice fully; prefer precise Oracle terminology; if unsure, choose the most canonical answer.
 
 Question:
 ${question.replace(/Question\s+\d+\s+of\s+\d+/i, "").trim()}
@@ -69,7 +70,7 @@ ${question.replace(/Question\s+\d+\s+of\s+\d+/i, "").trim()}
 Choices:
 ${choices.map((c, i) => `[${i + 1}] ${c}`).join("\n")}
 
-Answer:`;
+Answer (number only):`;
 
   // Keep the whole solve inside a safe time budget.
   const deadline = Date.now() + 14000;

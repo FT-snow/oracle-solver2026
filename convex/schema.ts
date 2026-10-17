@@ -33,7 +33,7 @@ export default defineSchema({
     question: v.string(),
     choices: v.array(v.string()),
     answerTexts: v.array(v.string()),
-    source: v.string(), // seed | cache | ai | manual | guess
+    source: v.string(), // seed | cache | ai | manual | guess | feedback
     answeredBy: v.string(), // userId or "seed"
     hits: v.number(),
     createdAt: v.number(),
@@ -45,4 +45,15 @@ export default defineSchema({
       searchField: "question",
       filterFields: ["source"],
     }),
+
+  diagnostics: defineTable({
+    kind: v.string(),
+    userId: v.string(),
+    url: v.string(),
+    question: v.string(),
+    choices: v.array(v.string()),
+    buttons: v.array(v.string()),
+    text: v.string(),
+    createdAt: v.number(),
+  }).index("by_createdAt", ["createdAt"]),
 });

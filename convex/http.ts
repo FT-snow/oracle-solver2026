@@ -198,6 +198,28 @@ http.route({
 });
 
 http.route({
+  path: "/diag",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    const arr = (v: unknown, max: number, len: number) =>
+      Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, len).map((x) => String(x).slice(0, max)) : [];
+    await ctx.runMutation(internal.diag.create, {
+      kind: str(body.kind, 60) || "unknown",
+      userId: t.userId || "unknown",
+      url: str(body.url, 400),
+      question: str(body.question, 400),
+      choices: arr(body.choices, 160, 12),
+      buttons: arr(body.buttons, 120, 20),
+      text: str(body.text, 4000),
+    });
+    return json({ ok: true });
+  }),
+});
+
+http.route({
   path: "/page-state",
   method: "POST",
   handler: httpAction(async () => json({ ok: true })),
@@ -432,6 +454,11 @@ adminRoute("/admin/users", "POST", async (ctx, _req, body) => {
 });
 
 adminRoute("/admin/users", "GET", async (ctx) => json(await ctx.runQuery(internal.auth.listAll, {})));
+
+adminRoute("/admin/diagnostics", "GET", async (ctx, req) => {
+  const limit = parseInt(new URL(req.url).searchParams.get("limit") || "50", 10);
+  return json(await ctx.runQuery(internal.diag.listRecent, { limit }));
+});
 
 adminRoute("/admin/reset-device", "POST", async (ctx, _req, body) => {
   const userId = str(body.userId, 120);

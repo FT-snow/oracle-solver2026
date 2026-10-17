@@ -10,6 +10,7 @@
 
 import type * as answers from "../answers.js";
 import type * as auth from "../auth.js";
+import type * as diag from "../diag.js";
 import type * as http from "../http.js";
 import type * as lib from "../lib.js";
 import type * as nodeauth from "../nodeauth.js";
@@ -24,6 +25,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   answers: typeof answers;
   auth: typeof auth;
+  diag: typeof diag;
   http: typeof http;
   lib: typeof lib;
   nodeauth: typeof nodeauth;
