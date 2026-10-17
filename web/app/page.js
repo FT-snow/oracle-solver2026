@@ -70,7 +70,7 @@ export default function Page() {
               </a>
               <a className="btn-quiet" href="#setup">View setup guide</a>
             </div>
-            <p className="hero-meta">v2.0.0 · Manifest V3 · 1,721 cached answers · works offline</p>
+            <p className="hero-meta">v2.1.0 · Manifest V3 · 1,721 cached answers · no setup needed</p>
           </Reveal>
 
           <Reveal d={2}>
@@ -100,10 +100,11 @@ export default function Page() {
             </Reveal>
             <Reveal as="div" className="step" d={1}>
               <div className="n">02</div>
-              <h3>Run the relay</h3>
+              <h3>No setup — it talks to the cloud</h3>
               <p>
-                <code>node auto.js</code> starts the local relay and the solver loop. It checks the
-                answer database first (0 ms), then asks Gemini for anything it has not seen.
+                No terminals, no installs. The extension queries the shared
+                1,700+ answer database directly (0 ms), and uses <em>your own</em> Gemini
+                key (pasted in the popup) for unseen questions — saved back for everyone.
               </p>
             </Reveal>
             <Reveal as="div" className="step" d={2}>
@@ -136,10 +137,10 @@ export default function Page() {
               </ul>
             </Reveal>
             <Reveal as="div" className="card w2" d={1}>
-              <h3><span className="tag">0 ms</span> Answer database</h3>
+              <h3><span className="tag">0 ms</span> Shared answer database</h3>
               <p>
-                Every solved question is stored — locally in SQLite-style JSON and in the shared
-                cloud database. Repeated questions answer instantly, no AI call, no waiting.
+                Every solved question is stored in one cloud database all users share.
+                Repeated questions answer instantly — no AI call, no key, no waiting.
               </p>
             </Reveal>
             <Reveal as="div" className="card w2" d={0}>
@@ -321,40 +322,33 @@ export default function Page() {
             </Reveal>
           </div>
           <Reveal d={2}>
-            <div className="setup-grid" style={{ marginTop: 16 }}>
-              <div className="codeblock">
-                <div className="cb-head"><span>3 · owner: cloud backend</span><span>once</span></div>
-                <pre>
-                  <span className="g">$</span> npx convex dev{'\n'}
-                  <span className="g">$</span> npx convex env set ADMIN_SECRET &lt;secret&gt;{'\n'}
-                  <span className="g">$</span> npm run seed:convex{'\n'}
-                  <span className="c"># pushes auth + shared answer DB to Convex</span>
-                </pre>
-              </div>
-              <div className="codeblock">
-                <div className="cb-head"><span>3 · get a free Gemini key</span><span>google ai studio</span></div>
-                <pre>
-                  <span className="c"># takes one minute, no billing needed</span>{'\n'}
-                  1. open <span className="g">aistudio.google.com</span>{'\n'}
-                  2. sign in with your Google account{'\n'}
-                  3. click <span className="g">Get API key</span> → <span className="g">Create API key</span>{'\n'}
-                  4. copy the key — it starts with <span className="g">AIza…</span>{'\n'}
-                  5. paste it in the extension popup (after sign-in){'\n'}
-                  {'  '}or give it to the operator for the .env{'\n'}
-                  {'\n'}
-                  <span className="c"># note: database hits answer in 0 ms and</span>{'\n'}
-                  <span className="c"># the AI is only called for unseen questions</span>
-                </pre>
-              </div>
-              <div className="codeblock" style={{ marginTop: 16 }}>
-                <div className="cb-head"><span>4 · browse the answers</span><span>anytime</span></div>
-                <pre>
-                  <span className="g">$</span> node answers.js &quot;rollback&quot;{'\n'}
-                  <span className="g">$</span> node answers.js --stats{'\n'}
-                  <span className="g">$</span> node answers.js --cloud --limit 50{'\n'}
-                  <span className="c"># local DB and shared cloud DB both searchable</span>
-                </pre>
-              </div>
+            <div className="codeblock">
+              <div className="cb-head"><span>3 · get a free Gemini key</span><span>google ai studio</span></div>
+              <pre>
+                <span className="c"># takes one minute, no billing needed</span>{'\n'}
+                1. open <span className="g">aistudio.google.com</span>{'\n'}
+                2. sign in with your Google account{'\n'}
+                3. click <span className="g">Get API key</span> → <span className="g">Create API key</span>{'\n'}
+                4. copy the key — it starts with <span className="g">AIza…</span>{'\n'}
+                5. paste it in the extension popup (after sign-in){'\n'}
+                {'\n'}
+                <span className="c"># note: database hits answer in 0 ms and</span>{'\n'}
+                <span className="c"># the AI is only called for unseen questions</span>
+              </pre>
+            </div>
+            <div className="codeblock" style={{ marginTop: 16 }}>
+              <div className="cb-head"><span>4 · owner tools</span><span>optional</span></div>
+              <pre>
+                <span className="c"># fully-autonomous CLI mode (owner machine):</span>{'\n'}
+                <span className="g">$</span> node auto.js{'\n'}
+                {'\n'}
+                <span className="c"># issue logins for friends:</span>{'\n'}
+                <span className="g">$</span> node admin.js add-user rahul.k{'\n'}
+                {'\n'}
+                <span className="c"># browse the shared database anytime:</span>{'\n'}
+                <span className="g">$</span> node answers.js --cloud --limit 50{'\n'}
+                <span className="g">$</span> node answers.js --stats
+              </pre>
             </div>
           </Reveal>
         </div>

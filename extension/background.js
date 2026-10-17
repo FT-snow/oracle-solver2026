@@ -1,8 +1,19 @@
-// background.js — MV3 service worker: proxies relay requests for content
-// scripts (avoids mixed-content issues), owns the login session and the
-// per-browser device id used for one-device-per-user locking.
+// background.js — MV3 service worker: proxies relay/solver requests for content
+// scripts, owns the login session and the per-browser device id used for
+// one-device-per-user locking.
+//
+// DEFAULT CLOUD MODE: talks straight to the Convex deployment (no local
+// relay needed). Owners can still override with a local relay by saving
+// {"serverUrl": "http://127.0.0.1:8787"} in chrome.storage.local.
 
-const RELAY = 'http://127.0.0.1:8787';
+const DEFAULT_SERVER = 'https://sleek-oyster-317.convex.site';
+
+async function getServer() {
+  const d = await getStore(['serverUrl']);
+  return d.serverUrl && String(d.serverUrl).startsWith('http')
+    ? String(d.serverUrl).replace(/\/+$/, '')
+    : DEFAULT_SERVER;
+}
 
 // ---- Device identity --------------------------------------------------------
 
@@ -77,13 +88,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'RELAY_FETCH') {
     (async () => {
       try {
+        const server = await getServer();
         const session = await getSession();
         const deviceId = await ensureDeviceId();
         const headers = {};
         if (msg.body) headers['Content-Type'] = 'application/json';
         if (session && session.token) headers['Authorization'] = `Bearer ${session.token}`;
         if (deviceId) headers['X-Device-Id'] = deviceId;
-        const res = await fetch(RELAY + msg.path, {
+        const res = await fetch(server + msg.path, {
           method: msg.method || 'GET',
           headers,
           body: msg.body ? JSON.stringify(msg.body) : undefined
@@ -108,17 +120,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       const session = await getSession();
       const deviceId = await ensureDeviceId();
+      const server = await getServer();
       let relay = null;
       try {
-        const res = await fetch(RELAY + '/health', { signal: AbortSignal.timeout(2500) });
+        const res = await fetch(server + '/health', { signal: AbortSignal.timeout(2500) });
         relay = await res.json();
       } catch (e) {
         relay = null;
       }
       let who = null;
-      if (session && session.token && relay && relay.auth && relay.auth.required) {
+      if (session && session.token) {
         try {
-          const res = await fetch(RELAY + '/whoami', {
+          const res = await fetch(server + '/whoami', {
             headers: { Authorization: `Bearer ${session.token}`, 'X-Device-Id': deviceId },
             signal: AbortSignal.timeout(4000)
           });
@@ -139,8 +152,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'LOGIN') {
     (async () => {
       try {
+        const server = await getServer();
         const deviceId = await ensureDeviceId();
-        const res = await fetch(RELAY + '/auth/login', {
+        const res = await fetch(server + '/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -170,7 +184,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const session = await getSession();
       try {
         if (session && session.token) {
-          await fetch(RELAY + '/auth/logout', {
+          await fetch((await getServer()) + '/auth/logout', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ token: session.token }),

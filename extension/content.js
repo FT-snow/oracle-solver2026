@@ -620,9 +620,47 @@
       const qid = r.body.qid;
       log(`Question qid=${qid} posted. Polling for answer...`);
 
-      const pollStartTime = Date.now();
+      // Cloud mode delivers the answer with the POST itself. Relay mode
+      // delivers it through /answer-poll.
       let answered = false;
-      while (Date.now() - pollStartTime < 20000) {
+      const nsDirect =
+        r.body.ns && Array.isArray(r.body.ns) && r.body.ns.length ? r.body.ns : null;
+
+      const pollStartTime = Date.now();
+      const applyAnswer = async (ns) => {
+        log(`Received answer ns=[${ns.join(', ')}]`);
+        lastSubmittedSnippet = snippet;
+        unansweredAttempts = 0;
+        answered = true;
+        const isLast = checkIsLastQuestion();
+        let clickedAny = false;
+        for (const n of ns) {
+          const target = data.resolve(n);
+          if (target) {
+            clickChoice(target);
+            clickedAny = true;
+            log(`Clicked choice ${n}: "${payload.choices[n - 1]}"`);
+            await sleep(60);
+          } else {
+            warn(`Could not resolve target for choice ${n}`);
+          }
+        }
+        if (clickedAny) {
+          await sleep(100);
+          clickSubmitAnswer();
+          lastNavActionTime = Date.now();
+        } else {
+          warn('No choice could be clicked — not submitting.');
+        }
+
+        if (isLast) {
+          log('Last question answered! Pausing briefly before clicking Complete Assessment...');
+          await sleep(800);
+          await handleTopCompleteAssessment();
+        }
+      };
+
+      while (!nsDirect && Date.now() - pollStartTime < 20000) {
         let poll = null;
         try {
           poll = await api('GET', '/answer-poll?qid=' + qid);
@@ -637,43 +675,19 @@
         }
 
         if (poll && poll.body && Array.isArray(poll.body.ns) && poll.body.ns.length) {
-          const ns = poll.body.ns;
-          log(`Received answer ns=[${ns.join(', ')}]`);
-          lastSubmittedSnippet = snippet;
-          unansweredAttempts = 0;
-          answered = true;
-          const isLast = checkIsLastQuestion();
-          let clickedAny = false;
-          for (const n of ns) {
-            const target = data.resolve(n);
-            if (target) {
-              clickChoice(target);
-              clickedAny = true;
-              log(`Clicked choice ${n}: "${payload.choices[n - 1]}"`);
-              await sleep(60);
-            } else {
-              warn(`Could not resolve target for choice ${n}`);
-            }
-          }
-          if (clickedAny) {
-            await sleep(100);
-            clickSubmitAnswer();
-            lastNavActionTime = Date.now();
-          } else {
-            warn('No choice could be clicked — not submitting.');
-          }
-
-          if (isLast) {
-            log('Last question answered! Pausing briefly before clicking Complete Assessment...');
-            await sleep(800);
-            await handleTopCompleteAssessment();
-          }
+          await applyAnswer(poll.body.ns);
           break;
         }
         await sleep(100);
       }
 
-      // The relay could not answer this question (AI down / no key / no cache).
+      // Cloud mode: the answer arrived with POST /question itself (kept in
+      // nsDirect; the while loop is skipped for it).
+      if (nsDirect) {
+        await applyAnswer(nsDirect);
+      }
+
+      // The solver could not answer this question (no key / AI down / no cache).
       // After the third failed cycle, force-guess the first choice so the quiz
       // keeps moving instead of looping on the same question forever.
       if (!answered) {

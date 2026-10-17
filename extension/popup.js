@@ -15,7 +15,7 @@ function render(session, relay) {
     $('relayVal').textContent = `online · auth: ${relay.auth ? relay.auth.mode : 'open'}`;
   } else {
     setDot($('relayDot'), 'bad');
-    $('relayVal').textContent = 'offline — run: node auto.js';
+    $('relayVal').textContent = 'offline — check your internet';
   }
 
   if (!relayOk) {

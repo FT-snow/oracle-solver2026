@@ -98,16 +98,23 @@ node admin.js list
 The first device each user signs in from becomes the only device that account
 accepts. `node admin.js reset-device rahul.k` lets them move.
 
-## Setup (users — five minutes)
+## Setup (users — three minutes, no installs)
 
 1. Download the extension zip from the site, unzip it.
-2. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the folder.
-3. Run `node auto.js` (starts relay + solver) — or `node relay.js` for manual mode.
-4. Click the extension icon, sign in with the issued user ID + password.
-5. Open your Oracle Academy course. The autopilot handles the rest.
+2. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the unzipped folder.
+3. Click the extension icon, sign in with the issued user ID + password (locks to that one browser).
+4. Click **"How do I get a free key?"** → follow the Google AI Studio steps → paste your `AIza…` key → Save.
 
-Manual mode (no AI): `node relay.js` in one terminal, `node wait.js` to see the
-current question, `node answer.js 2` to answer.
+That's it — no Node, no terminal. The extension talks straight to the cloud:
+shared database answers (0 ms, 1,721+ questions) first, your Gemini key only
+for unseen questions, and every AI answer flows back into the shared database.
+
+Owner-only optional CLI mode (fully autonomous on your own machine):
+`node relay.js` + `node auto.js` — the extension can also point at a local
+relay via `chrome.storage.local.set({ serverUrl: 'http://127.0.0.1:8787' })`.
+
+Manual mode (owner, no AI): `node relay.js` in one terminal, `node wait.js` to
+see the current question, `node answer.js 2` to answer.
 
 ---
 
@@ -133,7 +140,7 @@ npm test        # 8 tests: 6 extension DOM scenarios + DB + auth
 
 | Symptom | Fix |
 |---|---|
-| Popup says "relay offline" | Run `node auto.js` (or `node relay.js`) |
+| Popup says "relay offline" / "cloud unreachable" | No internet, or Convex is paused — check dashboard |
 | "login required" and nothing happens | Sign in from the extension popup |
 | `device_mismatch` at login | The account is bound elsewhere — owner runs `node admin.js reset-device <userId>` |
 | `login failed` in auto.js | Set `AUTH_USER`/`AUTH_PASS` in `.env` (dedicated CLI account) |

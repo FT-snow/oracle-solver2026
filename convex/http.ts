@@ -125,7 +125,71 @@ const http = httpRouter();
 http.route({
   path: "/health",
   method: "GET",
-  handler: httpAction(async () => json({ ok: true, service: "oracle-solver-auth", time: Date.now() })),
+  handler: httpAction(async () =>
+    json({ ok: true, service: "oracle-solver-auth", time: Date.now(), auth: { required: true, mode: "cloud" } })
+  ),
+});
+
+// ---- Quiz flow (extension talks straight to the cloud — no local relay) -----
+
+http.route({
+  path: "/question",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    const question = str(body.question, 4000);
+    const choices = Array.isArray(body.choices) ? body.choices.filter((c) => typeof c === "string" && c).slice(0, 20) : [];
+    if (!question || choices.length < 2) return json({ ok: false, error: "question and at least two choices required" }, 400);
+
+    // 1. Shared database first — 0 ms, no AI involved.
+    let ns = (await ctx.runQuery(internal.answers.resolveNs, { question, choices })) as number[] | null;
+    if (ns) {
+      await ctx.runMutation(internal.answers.recordHit, { question });
+      return json({ ok: true, qid: 1, ns, source: "db" });
+    }
+
+    // 2. Personal AI key on the account solves unseen questions...
+    const user = (await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId! })) as { geminiKey?: string } | null;
+    try {
+      const solved = (await ctx.runAction(internal.quiz.solveViaGemini, {
+        question,
+        choices,
+        key: user?.geminiKey || null,
+        userId: t.userId!,
+      })) as { ns: number[] | null; source: string };
+      ns = solved.ns;
+      // 3. ...and every AI answer is saved back so the database grows.
+      return json({ ok: true, qid: 1, ns: ns || null, source: solved.source });
+    } catch {
+      return json({ ok: true, qid: 1, ns: null, source: "error" });
+    }
+  }),
+});
+
+http.route({
+  path: "/answer-poll",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const t = await isTokenValid(ctx, req);
+    if (!t.ok) return json({ ok: false, error: "unauthorized" }, 401);
+    // In cloud mode the answer is delivered with POST /question itself, so
+    // there is nothing to poll for.
+    return json({ stale: true });
+  }),
+});
+
+http.route({
+  path: "/page-state",
+  method: "POST",
+  handler: httpAction(async () => json({ ok: true })),
+});
+
+http.route({
+  path: "/target-url",
+  method: "GET",
+  handler: httpAction(async () => json({ url: "" })),
 });
 
 http.route({

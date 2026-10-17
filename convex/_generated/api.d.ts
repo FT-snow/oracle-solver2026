@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as http from "../http.js";
 import type * as lib from "../lib.js";
 import type * as nodeauth from "../nodeauth.js";
+import type * as quiz from "../quiz.js";
 
 import type {
   ApiFromModules,
@@ -26,6 +27,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   lib: typeof lib;
   nodeauth: typeof nodeauth;
+  quiz: typeof quiz;
 }>;
 
 /**

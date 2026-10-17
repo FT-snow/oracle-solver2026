@@ -1,8 +1,9 @@
 import { internalQuery, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { cleanKey } from "./lib";
+import { matchAnswerIndices } from "./quiz";
 
-// The shared answer database. Every solver instance (yours + your friends')
+// The shared answer database: every solver instance (yours + your friends')
 // writes solved answers here and reads them back — one global brain.
 
 const SEP = "\u00a7";
@@ -15,6 +16,39 @@ export const getByKey = internalQuery({
       .withIndex("by_key", (q) => q.eq("key", args.key))
       .unique();
     return doc ?? null;
+  },
+});
+
+// Resolve a question against the shared database. Returns 1-based choice
+// indices when we have seen this question before; null otherwise.
+export const resolveNs = internalQuery({
+  args: { question: v.string(), choices: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    const key = cleanKey(args.question);
+    if (!key) return null as number[] | null;
+    const doc = await ctx.db
+      .query("answers")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .unique();
+    if (!doc || !doc.answerTexts?.length) return null as number[] | null;
+    return matchAnswerIndices(args.choices, doc.answerTexts);
+  },
+});
+
+// Bump the hit counter when a database hit answers a question.
+export const recordHit = internalMutation({
+  args: { question: v.string() },
+  handler: async (ctx, args) => {
+    const key = cleanKey(args.question);
+    if (!key) return null;
+    const doc = await ctx.db
+      .query("answers")
+      .withIndex("by_key", (q) => q.eq("key", key))
+      .unique();
+    if (doc) {
+      await ctx.db.patch(doc._id, { hits: (doc.hits || 0) + 1 });
+    }
+    return doc?._id ?? null;
   },
 });
 
