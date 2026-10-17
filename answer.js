@@ -1,4 +1,4 @@
-const { request, ensureRelay } = require('./client');
+const { request, ensureRelay, ensureAuth } = require('./client');
 
 const fs = require('fs');
 
@@ -21,6 +21,7 @@ async function main() {
   }
 
   await ensureRelay();
+  await ensureAuth();
 
   const health = await request('GET', '/health');
   const qid = health.body ? health.body.qid : 0;

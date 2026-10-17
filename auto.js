@@ -1,32 +1,22 @@
-const fs = require('fs');
+// auto.js — the solver loop: polls /next, answers from the database or Gemini,
+// submits to the relay (which clicks happen in the extension).
+//
+// Efficiency rules baked in:
+//   - Local answer DB first (0ms), AI second, manual/guess last.
+//   - Only real, currently-available Gemini models are tried (the old list
+//     contained dead model names that burned an 8s timeout per question).
+//   - If AI cannot answer after several retries, an optional deterministic
+//     guess keeps the quiz MOVING instead of stalling forever.
+
+require('./env').loadEnv();
 const path = require('path');
-const { request, ensureRelay } = require('./client');
+const db = require('./db');
+const { request, ensureRelay, ensureAuth } = require('./client');
 const readline = require('readline');
 
-// Persistent Cache: instant 0ms responses for repeated questions
-const CACHE_FILE = path.join(__dirname, 'quiz_cache.json');
-let quizCache = {};
-try {
-  if (fs.existsSync(CACHE_FILE)) {
-    quizCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    console.log(`Loaded ${Object.keys(quizCache).length} cached questions from quiz_cache.json.`);
-  }
-} catch (e) {}
+const ALLOW_FALLBACK_GUESS = (process.env.ALLOW_FALLBACK_GUESS || 'true').toLowerCase() !== 'false';
 
-function saveCache() {
-  try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(quizCache, null, 2));
-  } catch (e) {}
-}
-
-function cleanQuestionKey(q) {
-  return String(q || '')
-    .replace(/Question\s+\d+\s+of\s+\d+/i, '')
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
+// --- Answer matching ---------------------------------------------------------
 
 function normText(s) {
   return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -48,7 +38,7 @@ function isAnswerMatch(choice, target) {
 
 function findChoiceIndex(choices, target) {
   const normTarget = normText(target);
-  // 1. Try exact match first across all choices
+  // 1. Exact match first across all choices
   for (let i = 0; i < choices.length; i++) {
     if (normText(choices[i]) === normTarget) {
       return i;
@@ -63,42 +53,22 @@ function findChoiceIndex(choices, target) {
   return -1;
 }
 
+// Database-first cache: returns choice indices (1-based) or null.
 function checkCache(questionText, choices) {
-  const cleanQ = cleanQuestionKey(questionText);
-  if (!cleanQ || !quizCache[cleanQ]) return null;
-  const cachedAnswers = quizCache[cleanQ];
+  const rec = db.get(questionText);
+  if (!rec || !rec.answerTexts || !rec.answerTexts.length) return null;
   const matched = [];
-  for (const ans of cachedAnswers) {
+  for (const ans of rec.answerTexts) {
     const idx = findChoiceIndex(choices, ans);
-    if (idx !== -1) {
-      matched.push(idx + 1);
-    }
+    if (idx !== -1) matched.push(idx + 1);
   }
-  if (matched.length === cachedAnswers.length && matched.length > 0) {
+  if (matched.length === rec.answerTexts.length && matched.length > 0) {
     return [...new Set(matched)];
   }
   return null;
 }
 
-// Load local .env file if present (dependency-free)
-const ENV_FILE = path.join(__dirname, '.env');
-try {
-  if (fs.existsSync(ENV_FILE)) {
-    const lines = fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/);
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) continue;
-      const eqIdx = line.indexOf('=');
-      if (eqIdx !== -1) {
-        const k = line.slice(0, eqIdx).trim();
-        const v = line.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
-        if (!process.env[k]) {
-          process.env[k] = v;
-        }
-      }
-    }
-  }
-} catch (e) {}
+// --- Gemini ------------------------------------------------------------------
 
 // Multi-key rotation: reads from GEMINI_API_KEYS (comma-separated) or GEMINI_API_KEY
 const rawKeys = process.env.GEMINI_API_KEYS
@@ -106,6 +76,15 @@ const rawKeys = process.env.GEMINI_API_KEYS
   : (process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : []);
 const GEMINI_API_KEYS = rawKeys.map((k) => k.trim()).filter(Boolean);
 const keyCooldowns = {};
+
+// Real, currently-available models only (cheap/fast lite models first).
+const CANDIDATE_MODELS = [
+  'gemini-flash-lite-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash'
+];
 
 function printQuestion(q) {
   const line = '='.repeat(60);
@@ -148,36 +127,24 @@ ${choices.map((c, i) => `[${i + 1}] ${c}`).join('\n')}
 
 Answer:`;
 
-  const candidateModels = [
-    { name: 'gemini-flash-lite-latest', disableThinking: false },
-    { name: 'gemini-3.1-flash-lite', disableThinking: false },
-    { name: 'gemini-3.5-flash-lite', disableThinking: false },
-    { name: 'gemini-flash-latest', disableThinking: false }
-  ];
-
   const now = Date.now();
   for (const key of GEMINI_API_KEYS) {
-    for (const m of candidateModels) {
-      const cooldownKey = `${key.slice(0, 10)}_${m.name}`;
+    for (const model of CANDIDATE_MODELS) {
+      const cooldownKey = `${key.slice(0, 10)}_${model}`;
       if (keyCooldowns[cooldownKey] && keyCooldowns[cooldownKey] > now) continue;
 
       try {
-        const genConfig = {
-          maxOutputTokens: 200,
-          temperature: 0.0
-        };
-        if (m.disableThinking) {
-          genConfig.thinkingConfig = { thinkingBudget: 0 };
-        }
-
         const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${m.name}:generateContent?key=${key}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': key
+            },
             body: JSON.stringify({
               contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: genConfig
+              generationConfig: { maxOutputTokens: 200, temperature: 0.0 }
             }),
             signal: AbortSignal.timeout(8000)
           }
@@ -185,7 +152,7 @@ Answer:`;
 
         if (!res.ok) {
           const errText = await res.text();
-          console.warn(`[Key ${key.slice(0, 14)}.. | ${m.name} HTTP ${res.status}]: ${errText.slice(0, 80)}`);
+          console.warn(`[Key ${key.slice(0, 14)}.. | ${model} HTTP ${res.status}]: ${errText.slice(0, 80)}`);
           if (res.status === 429) {
             keyCooldowns[cooldownKey] = Date.now() + 60000;
           }
@@ -194,11 +161,11 @@ Answer:`;
 
         const data = await res.json();
         const raw = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-        console.log(`[${m.name}] raw response: "${raw}"`);
+        console.log(`[${model}] raw response: "${raw}"`);
         const indices = parseAnswerIndices(raw, choices.length);
         if (indices) return indices;
       } catch (err) {
-        console.warn(`[Key ${key.slice(0, 14)}.. | ${m.name} error: ${err.message}]`);
+        console.warn(`[Key ${key.slice(0, 14)}.. | ${model} error: ${err.message}]`);
       }
     }
   }
@@ -224,7 +191,12 @@ async function main() {
     console.log('Notice: No GEMINI_API_KEY set. (Create .env or set GEMINI_API_KEY env var to enable AI auto-solve).');
   }
   await ensureRelay();
-  console.log('Connected to Relay on 127.0.0.1:8787. Waiting for questions...');
+  console.log('Connected to relay on 127.0.0.1:8787.');
+  await ensureAuth();
+
+  const stats = db.stats();
+  console.log(`Answer database ready: ${stats.total} questions (${Object.entries(stats.bySource).map(([k, v]) => `${k}: ${v}`).join(', ') || 'empty'}).`);
+  console.log('Waiting for questions...');
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -241,30 +213,27 @@ async function main() {
         printQuestion(q);
 
         let selectedIndices = null;
+        let source = 'manual';
 
-        // 1. Check persistent cache for instant 0ms response
+        // 1. Check the answer database for an instant 0ms response
         const cachedIndices = checkCache(q.question, q.choices);
         if (cachedIndices) {
-          console.log(`⚡ [CACHE HIT - 0ms]: [${cachedIndices.join(', ')}] -> ${cachedIndices.map(i => q.choices[i-1]).join('; ')}`);
+          console.log(`\u26A1 [DB HIT - 0ms]: [${cachedIndices.join(', ')}] -> ${cachedIndices.map((i) => q.choices[i - 1]).join('; ')}`);
           selectedIndices = cachedIndices;
+          source = 'cache';
         }
 
-        // 2. Try Gemini Auto-Solve if not in cache
+        // 2. Try Gemini auto-solve if not in the database
         if (!selectedIndices && GEMINI_API_KEYS.length && q.choices && q.choices.length > 0) {
           console.log('Querying AI for the answer...');
           selectedIndices = await askGemini(q.question, q.choices);
           if (selectedIndices) {
-            console.log(`AI selected: [${selectedIndices.join(', ')}] -> ${selectedIndices.map(i => q.choices[i-1]).join('; ')}`);
-            // Cache the result for future instant hits
-            const cleanQ = cleanQuestionKey(q.question);
-            if (cleanQ) {
-              quizCache[cleanQ] = selectedIndices.map(i => q.choices[i-1]);
-              saveCache();
-            }
+            console.log(`AI selected: [${selectedIndices.join(', ')}] -> ${selectedIndices.map((i) => q.choices[i - 1]).join('; ')}`);
+            source = 'ai';
           }
         }
 
-        // 2. If AI didn't provide answer
+        // 3. Manual input (TTY) or bounded AI retries (headless)
         let retryCount = 0;
         while (!selectedIndices) {
           if (process.stdin.isTTY) {
@@ -279,22 +248,29 @@ async function main() {
           }
         }
 
+        // 4. Deterministic fallback guess so the quiz keeps moving
+        if (!selectedIndices && ALLOW_FALLBACK_GUESS && q.choices && q.choices.length > 0) {
+          selectedIndices = [1];
+          source = 'guess';
+          console.warn(`FALLBACK GUESS: choosing [1] "${q.choices[0]}" — set ALLOW_FALLBACK_GUESS=false to disable.`);
+        }
+
         if (!selectedIndices) {
           console.warn('Could not determine answer for qid=' + q.qid);
           continue;
         }
 
-        // 3. Submit answer to relay
-        const ansRes = await request('POST', '/answer', { qid: q.qid, n: selectedIndices });
+        // 5. Submit answer to relay (relay stores it in the answer DB + cloud)
+        const ansRes = await request('POST', '/answer', { qid: q.qid, n: selectedIndices, source });
         if (ansRes.status === 200) {
-          console.log(`Successfully submitted answer [${selectedIndices.join(',')}] for qid=${q.qid}!`);
+          console.log(`Submitted answer [${selectedIndices.join(',')}] for qid=${q.qid} (source: ${source}).`);
           lastAnsweredQid = q.qid;
           const qNumMatch = q.question.match(/Question\s+(\d+)\s+of\s+(\d+)/i);
           const isFinalQuestion = qNumMatch && parseInt(qNumMatch[1], 10) === parseInt(qNumMatch[2], 10);
           if (isFinalQuestion) {
             console.log('\n============================================================');
             console.log(`*** FINAL QUESTION (${qNumMatch[1]} of ${qNumMatch[2]}) SUBMITTED! ***`);
-            console.log('*** Please review and click "Complete Assessment" in your browser! ***');
+            console.log('*** Extension will click "Complete Assessment" and move to the next section. ***');
             console.log('============================================================\n');
           } else {
             console.log('Extension will click and submit on page. Waiting for next question...\n');
@@ -312,4 +288,7 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error('auto.js failed:', err.message);
+  process.exit(1);
+});

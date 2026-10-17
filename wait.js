@@ -1,4 +1,4 @@
-const { request, ensureRelay } = require('./client');
+const { request, ensureRelay, ensureAuth } = require('./client');
 
 function printQuestion(q) {
   const line = '='.repeat(60);
@@ -24,6 +24,7 @@ function printQuestion(q) {
 
 async function main() {
   await ensureRelay();
+  await ensureAuth();
   for (;;) {
     const r = await request('GET', '/next');
     if (r.status === 200 && r.body && r.body.qid > 0) {

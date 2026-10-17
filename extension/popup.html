@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Oracle Solver 2026</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111110;
+      --border: rgba(255, 255, 255, 0.09);
+      --text: #ececea;
+      --muted: #8f8f88;
+      --accent: #7fce91;
+      --danger: #d98a7e;
+      --mono: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+      --sans: -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 340px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 18px 18px 14px;
+    }
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+    .logo { font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+    .logo span { color: var(--accent); }
+    .ver { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+    .row { display: flex; align-items: center; gap: 7px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a4a45; flex: none; }
+    .dot.ok { background: var(--accent); }
+    .dot.warn { background: #c9b458; }
+    .dot.bad { background: var(--danger); }
+    .row .label { color: var(--muted); flex: none; width: 64px; font-size: 12px; }
+    .row .val { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    form { margin-top: 12px; }
+    label { display: block; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin: 10px 0 4px; }
+    input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 9px 10px;
+      outline: none;
+    }
+    input:focus { border-color: rgba(127, 206, 145, 0.55); }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      background: var(--text);
+      color: var(--bg);
+      border: none;
+      border-radius: 4px;
+      font-family: var(--sans);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 10px;
+      cursor: pointer;
+    }
+    button:hover { background: #ffffff; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      font-weight: 500;
+      margin-top: 8px;
+    }
+    button.ghost:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.25); background: transparent; }
+    .msg { margin-top: 10px; font-size: 12px; min-height: 16px; }
+    .msg.err { color: var(--danger); }
+    .msg.ok { color: var(--accent); }
+    .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0 0; }
+    .toggle-row .t-label { font-size: 12.5px; }
+    .switch { position: relative; width: 34px; height: 20px; flex: none; cursor: pointer; }
+    .switch input { display: none; }
+    .slider { position: absolute; inset: 0; background: #2a2a27; border: 1px solid var(--border); border-radius: 20px; transition: background 0.15s ease; }
+    .slider::before { content: ''; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); top: 3px; left: 3px; transition: transform 0.15s ease; }
+    .switch input:checked + .slider { background: rgba(127, 206, 145, 0.25); }
+    .switch input:checked + .slider::before { transform: translateX(14px); background: var(--accent); }
+    footer { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 10px; color: var(--muted); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">ORACLE SOLVER <span>2026</span></div>
+    <div class="ver">v2.0.0</div>
+  </header>
+
+  <div class="row">
+    <div class="dot" id="relayDot"></div>
+    <div class="label">Relay</div>
+    <div class="val" id="relayVal">checking…</div>
+  </div>
+  <div class="row">
+    <div class="dot" id="authDot"></div>
+    <div class="label">Access</div>
+    <div class="val" id="authVal">checking…</div>
+  </div>
+  <div class="row" style="border-bottom:none">
+    <div class="dot" id="deviceDot" style="background:#4a4a45"></div>
+    <div class="label">Device</div>
+    <div class="val" id="deviceVal">…</div>
+  </div>
+
+  <form id="loginForm">
+    <label for="userId">User ID</label>
+    <input id="userId" type="text" autocomplete="username" spellcheck="false" placeholder="e.g. rahul.k" required />
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
+    <button type="submit" id="loginBtn">Sign in</button>
+    <div class="msg" id="loginMsg"></div>
+  </form>
+
+  <div id="loggedIn" class="hidden">
+    <div class="toggle-row">
+      <div>
+        <div class="t-label">Autopilot</div>
+        <div style="font-size:11px;color:var(--muted)">advance lessons, solve quizzes, switch sections</div>
+      </div>
+      <label class="switch" title="Toggle autopilot">
+        <input type="checkbox" id="autopilotToggle" checked />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <button type="button" class="ghost" id="logoutBtn">Sign out</button>
+  </div>
+
+  <footer id="foot">device lock: one account · one machine</footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

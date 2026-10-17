@@ -1,14 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Quiz Relay",
-  "version": "1.0.0",
-  "description": "Sends the current quiz question to the local relay and clicks the operator's answer.",
+  "name": "Oracle Solver 2026",
+  "version": "2.0.0",
+  "description": "Autonomous Oracle Academy autopilot: solves quizzes via the local relay + AI, advances sections, stores every answer in the shared database. Login required.",
+  "permissions": ["storage"],
   "host_permissions": [
     "http://127.0.0.1:8787/*",
     "http://localhost:8787/*"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Oracle Solver 2026"
   },
   "content_scripts": [
     {

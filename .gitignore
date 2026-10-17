@@ -7,6 +7,16 @@
 redirect_url.txt
 answer.txt
 
+# Local data stores (answer DB fallback, local users fallback)
+data/
+
+# Next.js build artifacts
+web/.next/
+web/out/
+
+# Vercel
+.vercel/
+
 # Logs
 *.log
 *.err

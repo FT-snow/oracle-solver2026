@@ -1,0 +1,22 @@
+{
+  "name": "oracle-solver2026",
+  "private": true,
+  "version": "2.0.0",
+  "description": "Oracle Academy quiz autopilot — Chrome extension + local relay + Gemini auto-solve + Convex cloud auth & shared answer database",
+  "scripts": {
+    "relay": "node relay.js",
+    "auto": "node auto.js",
+    "admin": "node admin.js",
+    "answers": "node answers.js",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy",
+    "seed:convex": "node scripts/seed-convex.mjs",
+    "build:zip": "bash scripts/build-extension-zip.sh",
+    "site:dev": "npm run dev --prefix web",
+    "site:build": "npm run build --prefix web",
+    "test": "node tests/run-all.js"
+  },
+  "devDependencies": {
+    "convex": "^1.24.0"
+  }
+}

@@ -22,10 +22,39 @@
   let lastReportedState = '';
   let lastSubmittedSnippet = '';
   let lastCompleteAssessmentClickTime = 0;
+  let isQuizCompletedAwaitingUser = false;   // was previously an undeclared global (latent bug)
+
+  // Access-control state: the relay tells us via /health whether login is
+  // required (cloud mode / local users). When required and not verified, the
+  // autopilot stays idle instead of clicking around unauthenticated.
+  const authState = { required: null, ok: false, checkedAt: 0 };
+
+  // Kill switch controllable from the extension popup.
+  let autopilotEnabled = true;
+
+  // Course-outline helpers state
+  let lastOutlineNavTime = 0;
+
+  // Quiz watchdog state: same "Question X of Y" stuck on screen for too long
+  const quizWatch = { qNum: '', firstSeen: 0, submitRetried: false, altTried: false, reloadQueued: false };
+
+  // Force-guess counter: relay could not answer this question N times
+  let unansweredAttempts = 0;
+  let lastSnippetPosted = '';
 
   const log = (...a) => console.log('[autopilot]', ...a);
   const warn = (...a) => console.warn('[autopilot]', ...a);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Never let a scroll failure abort a click flow (some embedded/boundary
+  // contexts throw on scrollIntoView).
+  function safeScrollIntoView(el) {
+    try {
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    } catch (e) {}
+  }
 
   // Ensure PL/SQL is not prematurely marked complete in localStorage
   try {
@@ -41,17 +70,109 @@
 
   async function api(method, path, body) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'RELAY_FETCH', method, path, body }, (res) => {
-        if (chrome.runtime.lastError) {
-          return reject(new Error(chrome.runtime.lastError.message));
+      // Preferred route: background service worker (avoids mixed-content/PNA
+      // issues from the https page). Fallback: direct fetch with CORS (relay
+      // sends Access-Control-Allow-Origin: *) when the extension context is
+      // unavailable (e.g. invalidated during reload).
+      const send = () => {
+        fetch('http://127.0.0.1:8787' + path, {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        })
+          .then(async (res) => {
+            let parsed = null;
+            try {
+              parsed = await res.json();
+            } catch (e) {}
+            if (res.status === 401) {
+              authState.required = true;
+              authState.ok = false;
+              authState.checkedAt = Date.now();
+            }
+            if (!res.ok) return reject(new Error(parsed && parsed.error ? parsed.error : 'HTTP ' + res.status));
+            resolve({ status: res.status, body: parsed });
+          })
+          .catch((e) => reject(new Error(String(e && e.message ? e.message : e))));
+      };
+
+      try {
+        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+          send();
+          return;
         }
-        if (!res || !res.ok) {
-          return reject(new Error(res ? res.error : 'Network request failed'));
-        }
-        resolve({ status: res.status, body: res.body });
-      });
+        chrome.runtime.sendMessage({ type: 'RELAY_FETCH', method, path, body }, (res) => {
+          if (chrome.runtime.lastError) {
+            // Background unreachable — degrade to direct fetch instead of dying.
+            send();
+            return;
+          }
+          if (res && res.status === 401) {
+            // Token rejected/expired — background.js clears the session; the
+            // autopilot will idle until the user logs in from the popup.
+            authState.required = true;
+            authState.ok = false;
+            authState.checkedAt = Date.now();
+          }
+          if (!res || !res.ok) {
+            return reject(new Error(res ? res.error || 'HTTP ' + res.status : 'Network request failed'));
+          }
+          resolve({ status: res.status, body: res.body });
+        });
+      } catch (e) {
+        send();
+      }
     });
   }
+
+  // Ask the relay whether access control is on and whether our token is valid.
+  // Throttled internally to one probe every 4s.
+  async function probeAuth(force) {
+    const now = Date.now();
+    if (!force && now - authState.checkedAt < 4000) return authState;
+    authState.checkedAt = now;
+    try {
+      const h = await api('GET', '/health');
+      authState.required = !!(h.body && h.body.auth && h.body.auth.required);
+      if (!authState.required) {
+        authState.ok = true;
+        return authState;
+      }
+      const w = await api('GET', '/whoami');
+      authState.ok = w.status === 200 && !!(w.body && w.body.userId);
+    } catch (e) {
+      /* relay unreachable — keep last known state */
+    }
+    return authState;
+  }
+
+  // Popup toggle: autopilotEnabled in chrome.storage.local (default true).
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(['autopilotEnabled'], (d) => {
+        if (d && d.autopilotEnabled === false) autopilotEnabled = false;
+      });
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && Object.prototype.hasOwnProperty.call(changes, 'autopilotEnabled')) {
+          autopilotEnabled = changes.autopilotEnabled.newValue !== false;
+          log('Autopilot toggled ' + (autopilotEnabled ? 'ON' : 'OFF') + ' from popup');
+        }
+      });
+    }
+  } catch (e) {}
+
+  // Background re-probes auth after login/logout.
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg && msg.type === 'SESSION_UPDATED') {
+          authState.ok = false;
+          authState.checkedAt = 0;
+          probeAuth(true);
+        }
+      });
+    }
+  } catch (e) {}
 
   function reportState(state, action = '') {
     const key = `${state}|${action}`;
@@ -110,7 +231,7 @@
     lastNavActionTime = Date.now();
     log(`[Action: ${description}] Clicking:`, el);
     reportState('Navigating', `${description}: ${norm(el.innerText || el.value || '')}`);
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    safeScrollIntoView(el);
 
     const href = el.getAttribute ? el.getAttribute('href') : null;
     if (href && href.startsWith('javascript:')) {
@@ -123,9 +244,13 @@
       } catch (e) {}
     }
 
-    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    // Synthetic mouse events help APEX handlers notice the interaction; a
+    // missing/blocked MouseEvent must never abort the real click below.
+    try {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    } catch (e) {}
     el.click();
     return true;
   }
@@ -185,6 +310,9 @@
           ? parentContainer.querySelector('input[type="radio"], input[type="checkbox"]')
           : null;
         if (inp) return inp;
+        // No input inside — click the matching container itself (div/td/label
+        // based quiz UIs where the whole row is the clickable target).
+        return el;
       }
     }
 
@@ -288,11 +416,12 @@
     const afterChoices = t.split(/Choices[^\n]*/i)[1];
     if (afterChoices !== undefined) {
       const block = afterChoices.split(/Submit Answer|Previous Question|Version\s+\d/i)[0] || '';
-      const junk = /^(?:instructions|mark for review|save answer|clear|question\s+\d+\s+of\s+\d+)$/i;
+      const junk = /^(?:instructions|mark for review|save answer|clear|question\s+\d+\s+of\s+\d+|\u00a9|copyright)/i;
+      const oracleBoilerplate = /oracle\s+and\/or\s+its\s+affiliates/i;
       choiceTexts = block
         .split('\n')
         .map((s) => s.trim())
-        .filter((s) => s && !junk.test(s));
+        .filter((s) => s && !junk.test(s) && !oracleBoilerplate.test(s));
     } else if (/True\s+or\s+False\s*\?/i.test(t)) {
       const m = t.match(
         /True\s+or\s+False\s*\?([\s\S]*?)(?:Submit Answer|Previous Question|Version\s+\d)/i
@@ -352,9 +481,7 @@
     }
 
     const target = label || inp || el;
-    try {
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } catch (e) {}
+    safeScrollIntoView(target);
 
     if (inp && (inp.type === 'radio' || inp.type === 'checkbox')) {
       if (!inp.checked) {
@@ -392,11 +519,40 @@
 
     if (btn) {
       log('Clicking Complete Assessment button:', btn);
-      btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      safeScrollIntoView(btn);
       lastCompleteAssessmentClickTime = Date.now();
       btn.click();
       return true;
     }
+    return false;
+  }
+
+  // Escalating fallbacks when the normal "Submit Answer" button can't be found.
+  function tryAlternateSubmit() {
+    const sels = [
+      'button[aria-label*="submit" i]',
+      'button[aria-label*="next" i]',
+      'a[aria-label*="next" i]',
+      '.submit-button',
+      'button[type="submit"]'
+    ];
+    for (const sel of sels) {
+      const el = Array.from(document.querySelectorAll(sel)).find(isVisible);
+      if (el) {
+        log('Alternate submit click:', sel);
+        return triggerNavClick(el, 'Alternate submit: ' + sel, true);
+      }
+    }
+    try {
+      const form = document.querySelector('form');
+      if (form) {
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.submit();
+        log('Dispatched form submit as last resort');
+        return true;
+      }
+    } catch (e) {}
+    warn('No alternate submit strategy worked.');
     return false;
   }
 
@@ -419,10 +575,11 @@
 
     if (btn) {
       log('Clicking Submit/Next Question button:', btn);
-      btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      safeScrollIntoView(btn);
       btn.click();
     } else {
-      warn('Submit Answer button not found.');
+      warn('Submit Answer button not found — trying alternates.');
+      tryAlternateSubmit();
     }
   }
 
@@ -453,6 +610,7 @@
       };
 
       log(`Posting question: "${payload.question.slice(0, 60)}..." (${payload.choices.length} choices)`);
+      lastSnippetPosted = snippet;
       const r = await api('POST', '/question', payload);
       if (r.status !== 200 || !r.body || !r.body.qid) {
         warn('POST /question failed');
@@ -463,6 +621,7 @@
       log(`Question qid=${qid} posted. Polling for answer...`);
 
       const pollStartTime = Date.now();
+      let answered = false;
       while (Date.now() - pollStartTime < 20000) {
         let poll = null;
         try {
@@ -481,20 +640,28 @@
           const ns = poll.body.ns;
           log(`Received answer ns=[${ns.join(', ')}]`);
           lastSubmittedSnippet = snippet;
+          unansweredAttempts = 0;
+          answered = true;
           const isLast = checkIsLastQuestion();
+          let clickedAny = false;
           for (const n of ns) {
             const target = data.resolve(n);
             if (target) {
               clickChoice(target);
+              clickedAny = true;
               log(`Clicked choice ${n}: "${payload.choices[n - 1]}"`);
               await sleep(60);
             } else {
               warn(`Could not resolve target for choice ${n}`);
             }
           }
-          await sleep(100);
-          clickSubmitAnswer();
-          lastNavActionTime = Date.now();
+          if (clickedAny) {
+            await sleep(100);
+            clickSubmitAnswer();
+            lastNavActionTime = Date.now();
+          } else {
+            warn('No choice could be clicked — not submitting.');
+          }
 
           if (isLast) {
             log('Last question answered! Pausing briefly before clicking Complete Assessment...');
@@ -504,6 +671,23 @@
           break;
         }
         await sleep(100);
+      }
+
+      // The relay could not answer this question (AI down / no key / no cache).
+      // After the third failed cycle, force-guess the first choice so the quiz
+      // keeps moving instead of looping on the same question forever.
+      if (!answered) {
+        unansweredAttempts++;
+        if (snippet && snippet === lastSnippetPosted && unansweredAttempts >= 3) {
+          warn(`No answer after ${unansweredAttempts} attempts — force-guessing choice 1 to keep the quiz moving.`);
+          const first = data.resolve(1);
+          if (first) clickChoice(first);
+          await sleep(120);
+          clickSubmitAnswer();
+          lastSubmittedSnippet = snippet;
+          lastNavActionTime = Date.now();
+          unansweredAttempts = 0;
+        }
       }
     } catch (e) {
       warn('Quiz solver error:', e.message);
@@ -583,7 +767,7 @@
       setTimeout(async () => {
         const dest = await getTargetOutlineUrl();
         log('Navigating to Course Outline link:', dest);
-        location.href = dest;
+        navigateTop(dest);
       }, 1500);
       return true;
     }
@@ -621,8 +805,45 @@
     return false;
   }
 
-  // Dynamically fetches redirect URL from redirect_url.txt (via relay server)
+  // Navigate the TOP window (same-origin) so we never strand the user inside
+  // an iframe when redirecting after a quiz completes.
+  function navigateTop(url) {
+    try {
+      if (window.self !== window.top && window.top) {
+        window.top.location.href = url;
+        return;
+      }
+    } catch (e) {
+      /* cross-origin — fall through to same-frame navigation */
+    }
+    location.href = url;
+  }
+
+  // Remember the CURRENT session's course-outline URL whenever we see it.
+  // The old hardcoded TARGET_OUTLINE_URL contained a dead APEX session id +
+  // checksum, which is what sent everyone to a broken page after quizzes —
+  // the root cause of "it never moves on to the next section".
+  function maybeCaptureOutlineUrl() {
+    try {
+      const href = location.href;
+      if (!/f\?p=63000:14/.test(href)) return;
+      const stored = sessionStorage.getItem('oracle_outline_url');
+      if (stored === href) return;
+      const text = bodyText();
+      if (/course\s+outline|section|module|chapter|not\s*started|in\s*progress|completed/i.test(text)) {
+        sessionStorage.setItem('oracle_outline_url', href);
+        log('Captured course outline URL for this session:', href.slice(0, 90));
+      }
+    } catch (e) {}
+  }
+
+  // Dynamically resolves where to go after a quiz: current-session outline URL
+  // (captured live) -> redirect_url.txt via relay -> hardcoded last resort.
   async function getTargetOutlineUrl() {
+    try {
+      const stored = sessionStorage.getItem('oracle_outline_url');
+      if (stored && stored.startsWith('http')) return stored.trim();
+    } catch (e) {}
     try {
       const res = await api('GET', '/target-url');
       if (res && res.body && typeof res.body.url === 'string' && res.body.url.startsWith('http')) {
@@ -647,35 +868,42 @@
     reportState('Navigating', 'Redirecting from Score Screen to Course Outline');
     const dest = await getTargetOutlineUrl();
     log('Score/Results page detected. Redirecting to Course Outline in the same tab:', dest);
-    location.href = dest;
+    navigateTop(dest);
     return true;
   }
 
   // --- Lesson Reading / Slide Advancement ---
   let lastLessonNextClickTime = 0;
   function handleLessonNext() {
-    // Avoid hammering the server while page is saving: wait at least 0.45s between clicks
-    if (Date.now() - lastLessonNextClickTime < 450) return false;
+    // After "Save and Continue" the same button stays visible until the next
+    // slide loads; re-clicking too fast can skip content or double-advance.
+    // 3s gives the page time to transition.
+    if (Date.now() - lastLessonNextClickTime < 3000) return false;
 
     const buttons = Array.from(
       document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
     ).filter(isVisible);
 
+    // Lesson context prevents clicking generic "Next"/"Continue" buttons on
+    // unrelated pages (dashboards, navs) — only advance when the page itself
+    // looks like a lesson/slide flow.
+    const pageText = bodyText();
+    const lessonCtx = /save\s*(and|&)\s*(continue|progress|next)|next\s*(slide|lesson)|mark\s*as\s*complete|slide\s+\d+\s+of\s+\d+/i.test(pageText);
+
     for (const b of buttons) {
       const txt = norm(b.innerText || b.value || '').toLowerCase();
-      if (
+      const explicit =
         txt.includes('save and continue') ||
         txt.includes('save & continue') ||
         txt.includes('save progress') ||
         txt.includes('save & progress') ||
         txt.includes('save and next') ||
         txt.includes('save & next') ||
-        txt === 'continue' ||
         txt === 'next lesson' ||
         txt === 'next slide' ||
-        txt === 'next' ||
-        txt === 'mark as complete'
-      ) {
+        txt === 'mark as complete';
+      const generic = txt === 'continue' || txt === 'next';
+      if (explicit || (generic && lessonCtx)) {
         lastLessonNextClickTime = Date.now();
         log(`Found lesson advancement button: "${txt}". Clicking once and waiting...`);
         return triggerNavClick(b, `Advance Lesson: ${txt}`, true);
@@ -737,9 +965,47 @@
   }
 
   // --- Course Outline Navigation ---
-  // Disabled per user request: user will manually select which section to open
+  // Automatically opens the NEXT unfinished section on the course outline page
+  // (prefers "In Progress", then "Not Started"; never touches "Completed").
   function handleCourseOutline() {
-    return false;
+    const href = (typeof location !== 'undefined' && location.href) || '';
+    if (!/f\?p=63000:14/.test(href)) return false;
+    if (Date.now() - lastOutlineNavTime < 4000) return false;
+
+    const text = bodyText();
+    if (!/not\s*started|in\s*progress|resume|continue|completed/i.test(text)) return false;
+
+    const clickables = Array.from(
+      document.querySelectorAll('a, button, [role="button"], tr[onclick]')
+    ).filter(isVisible);
+
+    const candidates = [];
+    for (const el of clickables) {
+      // Find the most specific enclosing row that carries a status string.
+      let container = el.closest('tr, li, article') || el.closest('.row, div.t-Report-row') || el;
+      let statusText = norm(container.innerText || '');
+      if (statusText.length > 400) {
+        container = el.closest('tr, li') || el;
+        statusText = norm(container.innerText || '');
+      }
+      if (statusText.length > 400) continue;
+
+      const s = statusText.toLowerCase();
+      if (/\bcompleted\b|100\s*%|passed|score\s*report/i.test(s)) continue; // finished — skip
+      let score = 0;
+      if (/in\s*progress|resume|continue/i.test(s)) score += 2;
+      if (/not\s*started/i.test(s)) score += 1;
+      if (score === 0) continue;
+      score -= Math.min(statusText.length / 200, 1); // prefer tighter rows
+      candidates.push({ el, score, statusText });
+    }
+
+    if (!candidates.length) return false;
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+    lastOutlineNavTime = Date.now();
+    log('Course outline: opening next section ->', best.statusText.slice(0, 80));
+    return triggerNavClick(best.el, `Open next section: ${best.statusText.slice(0, 40)}`, true);
   }
 
   // --- Front Page Handlers (p=63000:1) ---
@@ -815,12 +1081,62 @@
 
   let lastSeenUrl = typeof location !== 'undefined' ? location.href : '';
 
+  // Current "Question X of Y" identifier, e.g. "4/15" ('' when not on a quiz).
+  function questionNumberOnPage() {
+    const m = bodyText().match(/question\s+(\d+)\s+of\s+(\d+)/i);
+    return m ? `${m[1]}/${m[2]}` : '';
+  }
+
+  // Watchdog: if the SAME question number stays on screen for 20s/45s/75s we
+  // escalate — re-click submit -> alternate submit strategies -> one reload.
+  // This is what un-sticks the "keeps solving the same question" failure mode.
+  function quizWatchdogTick() {
+    const qNum = questionNumberOnPage();
+    if (!qNum) {
+      quizWatch.qNum = '';
+      return;
+    }
+    if (qNum !== quizWatch.qNum) {
+      quizWatch.qNum = qNum;
+      quizWatch.firstSeen = Date.now();
+      quizWatch.submitRetried = false;
+      quizWatch.altTried = false;
+      quizWatch.reloadQueued = false;
+      return;
+    }
+    const stuckMs = Date.now() - quizWatch.firstSeen;
+    if (stuckMs < 20000 || Date.now() - lastNavActionTime < 3000) return;
+
+    if (stuckMs > 75000 && !quizWatch.reloadQueued) {
+      quizWatch.reloadQueued = true;
+      const lastReload = parseInt(sessionStorage.getItem('quiz_reload_at') || '0', 10);
+      if (Date.now() - lastReload > 90000) {
+        sessionStorage.setItem('quiz_reload_at', String(Date.now()));
+        warn('Question stuck for >75s — reloading the page once to recover.');
+        location.reload();
+        return;
+      }
+    }
+    if (stuckMs > 45000 && !quizWatch.altTried) {
+      quizWatch.altTried = true;
+      warn('Question stuck for >45s — trying alternate submit strategies.');
+      tryAlternateSubmit();
+      return;
+    }
+    if (!quizWatch.submitRetried) {
+      quizWatch.submitRetried = true;
+      warn('Question stuck for >20s — re-clicking Submit Answer.');
+      clickSubmitAnswer();
+    }
+  }
+
   // --- Main Autopilot Loop ---
   async function autopilotCycle() {
     const currentHref = typeof location !== 'undefined' ? location.href : '';
     if (currentHref !== lastSeenUrl) {
       lastSeenUrl = currentHref;
       lastSubmittedSnippet = '';
+      unansweredAttempts = 0;
     }
 
     if (isSolvingQuiz) {
@@ -832,19 +1148,36 @@
       }
     }
 
+    // 0. Kill switch (popup toggle)
+    if (!autopilotEnabled) return;
+
+    // 0.5 Access control: idle while locked out (popup login required).
+    await probeAuth();
+    if (authState.required && !authState.ok) {
+      reportState('Locked', 'Login required — open the extension popup and sign in');
+      return;
+    }
+
+    // Remember the outline URL whenever we see it (enables clean post-quiz redirects).
+    maybeCaptureOutlineUrl();
+
     // 1. Confirm Complete Assessment Modal (if open)
     if (await handleConfirmCompleteModal()) return;
 
     // 2. Active Quiz Question (Highest Priority)
     const text = bodyText();
-    const hasQuestion = /question\s+\d+\s+of\s+\d+/i.test(text) || /question\s*\d/i.test(text);
     const hasInputs = document.querySelector('input[type="radio"], input[type="checkbox"], button.choice-SelectArea') !== null;
+    const hasSubmitHint = /submit\s+answer/i.test(text);
+    const hasQuestion =
+      /question\s+\d+\s+of\s+\d+/i.test(text) ||
+      (hasSubmitHint && (hasInputs || /choices/i.test(text)));
 
-    if (hasQuestion && hasInputs) {
+    if (hasQuestion && (hasInputs || hasSubmitHint)) {
       if (checkIsLastQuestion() && isLastQuestionAnsweredAndSelected()) {
         if (await handleTopCompleteAssessment()) return;
       }
 
+      quizWatchdogTick();
       await runQuizFlow();
       return;
     }
@@ -858,7 +1191,8 @@
     // 5. Lesson slide "Save and Continue" / "Save Progress"
     if (handleLessonNext()) return;
 
-    // Manual navigation preserved: quiz starting, outline course hopping, and score-screen leaves remain manual.
+    // 6. Course outline page -> open the next unfinished section automatically
+    if (handleCourseOutline()) return;
 
     // Idle heartbeat reporting
     reportState('Monitoring Page', norm(document.title));

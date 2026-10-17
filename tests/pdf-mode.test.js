@@ -1,3 +1,10 @@
+// pdf-mode.test.js — DOM scenarios for the extension's autopilot.
+// Simulates just enough DOM (compound selectors, visibility, class lists) for
+// extension/content.js to run its real logic end-to-end.
+//
+// Usage: node tests/pdf-mode.test.js <scenario>
+// Scenarios: pdf | startquiz | quiz | resolve | resolve-group | idle
+
 const path = require('path');
 
 const scenario = process.argv[2];
@@ -6,18 +13,33 @@ const contentPath = path.join(__dirname, '..', 'extension', 'content.js');
 const posts = [];
 const clicks = [];
 
+function matchBranch(e, branch) {
+  branch = branch.trim();
+  if (branch === '*') return true;
+  let m;
+  if ((m = branch.match(/^label\[for="(.*)"\]$/))) {
+    return e.tag === 'label' && e.id === m[1];
+  }
+  if ((m = branch.match(/^input\[type="([^"]+)"\]$/))) {
+    return e.tag === 'input' && e.type === m[1];
+  }
+  if ((m = branch.match(/^([a-z]+)\[([a-z-]+)\]$/))) {
+    return e.tag === m[1] && !!e.attrs[m[2]];
+  }
+  if ((m = branch.match(/^\[([a-z-]+)="([^"]+)"\]$/))) {
+    return e.attrs[m[1]] === m[2];
+  }
+  if ((m = branch.match(/^([a-z]+)\.([\w-]+)$/))) {
+    return e.tag === m[1] && e.classList.includes(m[2]);
+  }
+  if (branch.startsWith('.')) {
+    return e.classList.includes(branch.slice(1));
+  }
+  return e.tag === branch;
+}
+
 function matchesSel(e, sel) {
-  if (sel === '*') return true;
-  if (sel === 'input') return e.tag === 'input';
-  if (sel === 'label') return e.tag === 'label';
-  if (sel === 'button' || sel === 'a') return e.tag === sel;
-  if (sel === 'input[type="radio"], input[type="checkbox"]')
-    return e.tag === 'input' && (e.type === 'radio' || e.type === 'checkbox');
-  if (sel === 'button, a, input[type="button"], input[type="submit"]')
-    return e.tag === 'button' || e.tag === 'a' || (e.tag === 'input' && (e.type === 'button' || e.type === 'submit'));
-  const m = sel.match(/^label\[for="(.*)"\]$/);
-  if (m) return e.tag === 'label' && e.id === m[1];
-  return false;
+  return sel.split(',').some((branch) => matchBranch(e, branch));
 }
 
 function queryAll(root, sel) {
@@ -40,15 +62,15 @@ function el(tag, opts = {}) {
     children: [],
     parent: null,
     checked: false,
+    classList: opts.class ? String(opts.class).split(/\s+/).filter(Boolean) : [],
+    attrs: opts.attrs || {},
     matches(sel) {
-      if (sel === 'input') return tag === 'input';
-      if (sel === 'label') return tag === 'label';
-      return false;
+      return matchesSel(e, sel);
     },
     closest(sel) {
       let p = e.parent;
       while (p) {
-        if (p.tag === sel) return p;
+        if (matchesSel(p, sel)) return p;
         p = p.parent;
       }
       return null;
@@ -59,6 +81,9 @@ function el(tag, opts = {}) {
     querySelectorAll(sel) {
       return queryAll(e, sel);
     },
+    getBoundingClientRect() {
+      return { width: 40, height: 20, top: 10, left: 10 };
+    },
     click() {
       clicks.push(e);
       if (tag === 'input' && (e.type === 'checkbox' || e.type === 'radio')) e.checked = !e.checked;
@@ -67,7 +92,9 @@ function el(tag, opts = {}) {
       return true;
     },
     getAttribute(name) {
-      return name === 'value' ? opts.value : null;
+      if (name === 'value') return opts.value || null;
+      if (name === 'href') return opts.href || null;
+      return e.attrs[name] !== undefined ? e.attrs[name] : null;
     }
   };
   return e;
@@ -152,7 +179,10 @@ if (scenario === 'pdf') {
   process.exit(2);
 }
 
-global.window = {};
+global.window = {
+  getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
+  addEventListener: () => {}
+};
 global.CSS = { escape: (s) => s };
 global.sessionStorage = {
   _v: {},
@@ -164,9 +194,16 @@ if (typeof global.Event === 'undefined') {
     constructor(type) { this.type = type; }
   };
 }
+global.MouseEvent = class MouseEvent extends global.Event {
+  constructor(type, opts) {
+    super(type);
+    Object.assign(this, opts || {});
+  }
+};
 global.document = {
   readyState: 'complete',
   body,
+  title: 'Test Page',
   querySelectorAll(sel) {
     if (sel === '*') {
       const all = [];
@@ -181,6 +218,33 @@ global.document = {
   },
   getElementById(id) {
     return this.querySelectorAll('*').find((e) => e.id === id) || null;
+  }
+};
+// Faithful simulation of extension/background.js: routes content-script
+// RELAY_FETCH messages through the mocked global fetch.
+global.chrome = {
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      const RELAY = 'http://127.0.0.1:8787';
+      fetch(RELAY + msg.path, {
+        method: msg.method || 'GET',
+        headers: msg.body ? { 'Content-Type': 'application/json' } : undefined,
+        body: msg.body ? JSON.stringify(msg.body) : undefined
+      })
+        .then(async (res) => {
+          let text;
+          if (typeof res.text === 'function') text = await res.text();
+          else text = JSON.stringify(await res.json());
+          let parsed = null;
+          try {
+            parsed = JSON.parse(text);
+          } catch (e) {}
+          cb({ ok: true, status: res.status, body: parsed });
+        })
+        .catch((e) => cb({ ok: false, error: String(e) }));
+    },
+    onMessage: { addListener: () => {} }
   }
 };
 global.fetch = async (url, opts) => {

@@ -1,9 +1,13 @@
 const http = require('http');
+const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const path = require('path');
 
 const HOST = '127.0.0.1';
-const PORT = 8787;
+const PORT = parseInt(process.env.RELAY_PORT || '8787', 10);
+
+const authState = { token: null, deviceId: null, userId: null };
 
 function request(method, pathName, body) {
   return new Promise((resolve, reject) => {
@@ -12,6 +16,10 @@ function request(method, pathName, body) {
     if (payload) {
       headers['Content-Type'] = 'application/json';
       headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+    if (authState.token) {
+      headers['Authorization'] = `Bearer ${authState.token}`;
+      headers['X-Device-Id'] = authState.deviceId || '';
     }
     const req = http.request({ host: HOST, port: PORT, path: pathName, method, headers }, (res) => {
       let data = '';
@@ -54,7 +62,49 @@ async function ensureRelay() {
       /* keep trying */
     }
   }
-  throw new Error('relay.js failed to start on 127.0.0.1:8787');
+  throw new Error(`relay.js failed to start on ${HOST}:${PORT}`);
 }
 
-module.exports = { request, ensureRelay };
+// Stable per-machine device id for CLI logins (auto.js / wait.js / answer.js).
+function stableDeviceId() {
+  const base = `${os.hostname()}|${os.userInfo().username}|cli`;
+  return 'cli-' + crypto.createHash('sha256').update(base).digest('hex').slice(0, 24);
+}
+
+// Login when the relay enforces access control. No-op in open mode.
+async function ensureAuth() {
+  let health;
+  try {
+    health = await request('GET', '/health');
+  } catch (e) {
+    throw new Error(`relay not reachable at ${HOST}:${PORT}: ${e.message}`);
+  }
+  const authInfo = health.body && health.body.auth ? health.body.auth : { required: false };
+  if (!authInfo.required) {
+    return { ok: true, mode: authInfo.mode || 'open' };
+  }
+  if (authState.token) return { ok: true, mode: authInfo.mode };
+
+  const userId = process.env.AUTH_USER;
+  const password = process.env.AUTH_PASS;
+  if (!userId || !password) {
+    throw new Error('relay requires login — set AUTH_USER and AUTH_PASS in .env (create accounts with: node admin.js add-user)');
+  }
+  authState.deviceId = stableDeviceId();
+  const r = await request('POST', '/auth/login', {
+    userId,
+    password,
+    deviceId: authState.deviceId,
+    deviceLabel: `CLI ${os.hostname()}`
+  });
+  if (r.status !== 200 || !r.body || !r.body.ok || !r.body.token) {
+    const code = r.body && (r.body.code || r.body.error);
+    throw new Error(`login failed (${r.status}): ${code || 'unknown error'}`);
+  }
+  authState.token = r.body.token;
+  authState.userId = r.body.userId;
+  console.log(`Logged in as ${r.body.userId} (mode: ${authInfo.mode})`);
+  return { ok: true, mode: authInfo.mode, userId: r.body.userId };
+}
+
+module.exports = { request, ensureRelay, ensureAuth, authState };
