@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Oracle Solver 2026",
-  "version": "2.5.0",
-  "description": "Autonomous Oracle Academy autopilot: solves quizzes from the shared cloud database, learns from feedback, iterates retakes to 100%, walks section to section. Login required.",
+  "version": "2.6.0",
+  "description": "Autonomous Oracle Academy autopilot: shared cloud DB, learns incorrect rows from results, iterates retakes with fresh AI answers to 100%, walks sections by itself.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://sleek-oyster-317.convex.site/*",

@@ -70,7 +70,7 @@ export default function Page() {
               </a>
               <a className="btn-quiet" href="#setup">View setup guide</a>
             </div>
-            <p className="hero-meta">v2.5.0 · 1,721 cached answers · walks section to section · iterates to 100% · you stay in control</p>
+            <p className="hero-meta">v2.6.0 · reads results screens · re-solves wrong questions with AI · iterates to 100% · walks sections by itself</p>
           </Reveal>
 
           <Reveal d={2}>

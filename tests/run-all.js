@@ -17,7 +17,7 @@ function run(name, args) {
 }
 
 // Extension DOM scenarios
-for (const scenario of ['pdf', 'startquiz', 'quiz', 'resolve', 'resolve-group', 'idle']) {
+for (const scenario of ['pdf', 'startquiz', 'quiz', 'resolve', 'resolve-group', 'results', 'idle']) {
   run(`extension/${scenario}`, [path.join(__dirname, 'pdf-mode.test.js'), scenario]);
 }
 

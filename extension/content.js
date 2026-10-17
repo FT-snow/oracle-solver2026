@@ -725,6 +725,11 @@
         extractionFailed: false,
         attempt: parseInt(sessionStorage.getItem('auto_attempts') || '0', 10) || 0
       };
+      const markedWrongNow = isMarkedWrong(norm(data.question || ''));
+      if (markedWrongNow) {
+        payload.attempt = Math.max(payload.attempt, 1);
+        log('This question was incorrect last attempt — forcing API re-solve.');
+      }
 
       log(`Posting question: "${payload.question.slice(0, 60)}..." (${payload.choices.length} choices)`);
       lastSnippetPosted = snippet;
@@ -844,6 +849,60 @@
       await sleep(30);
       isSolvingQuiz = false;
     }
+  }
+
+  // --- Wrong-question ledger (retake targeting) ---------------------------------
+  // The results screen's incorrect rows are recorded per session. On the
+  // retake, marked questions skip the answer database entirely and are
+  // re-solved by the API (attempt-aware cloud path), so wrong answers are
+  // actually re-answered, not replayed.
+  function wrongList() {
+    try {
+      return JSON.parse(sessionStorage.getItem('wrongq') || '[]');
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function addWrong(snippet) {
+    const key = norm(snippet || '').slice(0, 160);
+    if (!key) return;
+    try {
+      const list = wrongList();
+      if (!list.some((x) => key.includes(x.key) || x.key.includes(key))) {
+        list.push({ key });
+        if (list.length > 50) list.shift();
+        sessionStorage.setItem('wrongq', JSON.stringify(list));
+        log('Marked for API re-solve on retake:', key.slice(0, 60));
+      }
+    } catch (e) {}
+  }
+
+  function isMarkedWrong(snippet) {
+    const key = norm(snippet || '').slice(0, 160);
+    return wrongList().some((x) => key.includes(x.key) || x.key.includes(key));
+  }
+
+  function clearWrongList() {
+    try {
+      sessionStorage.removeItem('wrongq');
+    } catch (e) {}
+  }
+
+  // Read the results screen: mark every incorrect row's question text.
+  function captureWrongRows() {
+    let n = 0;
+    const rows = Array.from(document.querySelectorAll('tr, li, .row, div')).filter(isVisible);
+    for (const el of rows) {
+      const t = norm(el.innerText || '');
+      if (t.length < 20 || t.length > 600) continue;
+      if (!/incorrect|marked\s+wrong|partial/i.test(t)) continue;
+      if (/^incorrect$/i.test(t)) continue;
+      addWrong(t);
+      n++;
+    }
+    if (n) log(`Results screen: ${n} incorrect answers marked for AI re-solve.`);
+    return n > 0;
   }
 
   // --- Learn from Oracle's feedback + diagnostics capture ----------------------
@@ -1119,6 +1178,15 @@
     if (Date.now() - lastNav < 60000) return false;
     sessionStorage.setItem('score_nav_at', String(Date.now()));
 
+    // FIRST: record incorrect rows so the retake re-solves them with the API;
+    // clear the ledger the moment we finally hit 100%.
+    const mPctLedger = text.match(/(\d{1,3})\s*%/i);
+    if (mPctLedger && parseInt(mPctLedger[1], 10) >= 100) {
+      clearWrongList();
+    } else {
+      captureWrongRows();
+    }
+
     // Auto-retake: if the score is below 100%, click the retake button (up to
     // 5 attempts). Stale AI answers are ignored on retakes so the API can
     // re-solve the ones it got wrong.
@@ -1150,6 +1218,7 @@
     }
 
     reportState('Navigating', 'Score screen: returning to the course');
+
     // 1) Trust the page's own return control when one exists.
     const back = await findBackToCourseControl();
     if (back) {
@@ -1320,6 +1389,7 @@
     lastOutlineNavTime = Date.now();
     try {
       sessionStorage.setItem('auto_attempts', '0');
+      sessionStorage.removeItem('wrongq'); // fresh section, fresh ledger
     } catch (e) {}
     log('Course outline: opening next incomplete section ->', best.statusText.slice(0, 80));
     return triggerNavClick(best.el, `Open next section: ${best.statusText.slice(0, 40)}`, true);
@@ -1396,6 +1466,32 @@
     return false;
   }
 
+  // --- Section idle recovery: go back to the outline on its own ----------------
+  // If the autopilot sits on a page where none of the handlers can act for
+  // 90s (no quiz, no lesson buttons, no outline rows), it returns to the
+  // course list autonomously so the run keeps flowing between sections.
+  let idleAnchorTime = 0;
+  function sectionIdleTick() {
+    const now = Date.now();
+    if (!idleAnchorTime) {
+      idleAnchorTime = now;
+      return false;
+    }
+    const lastActivity = Math.max(lastNavActionTime, idleAnchorTime);
+    if (now - lastActivity < 90000) return false;
+    idleAnchorTime = now; // re-trigger no sooner than 90s later
+    log('No progress on this page for 90s — going back to the course outline.');
+    sendDiag('section-idle-return', '');
+    const back = findBackToCourseControl();
+    if (back) return triggerNavClick(back, 'Idle: back to course list', true);
+    let stored = '';
+    try {
+      stored = sessionStorage.getItem('oracle_outline_url') || '';
+    } catch (e) {}
+    if (stored && stored.startsWith('http')) return navigateTop(stored);
+    return false;
+  }
+
   let lastSeenUrl = typeof location !== 'undefined' ? location.href : '';
 
   // Current "Question X of Y" identifier, e.g. "4/15" ('' when not on a quiz).
@@ -1460,6 +1556,7 @@
       lastSeenUrl = currentHref;
       lastSubmittedSnippet = '';
       unansweredAttempts = 0;
+      idleAnchorTime = Date.now();
     }
 
     if (isSolvingQuiz) {
@@ -1516,6 +1613,9 @@
 
     // 6. Course outline page -> open the next unfinished section automatically
     if (handleCourseOutline()) return;
+
+    // 7. Idle too long with nothing actionable? Go back to the outline.
+    if (sectionIdleTick()) return;
 
     // Idle heartbeat reporting
     reportState('Monitoring Page', norm(document.title));

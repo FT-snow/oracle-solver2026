@@ -52,6 +52,9 @@ function queryAll(root, sel) {
   return out;
 }
 
+// Keeps session-scoped state inspectable from assertions.
+const sessionStore = {};
+
 function el(tag, opts = {}) {
   const e = {
     tag,
@@ -170,6 +173,14 @@ if (scenario === 'pdf') {
   });
   choicesDiv = append(body, el('div', { text: 'Alpha\nBeta\nGamma\nDelta' }));
   append(body, el('button', { text: 'Submit Answer' }));
+} else if (scenario === 'results') {
+  body = el('body', {
+    text: 'Your assessment is now complete!\nScore: 75%\nRetake Assessment'
+  });
+  const rows = append(body, el('div', {}));
+  append(rows, el('div', { text: 'Question 1 of 10 - The TRUNCATE command cannot be rolled back. Correct' }));
+  append(rows, el('div', { text: 'Question 3 of 10 - The default number of rollback segments is 10. Incorrect' }));
+  append(body, el('button', { text: 'Retake Assessment' }));
 } else if (scenario === 'idle') {
   body = el('body', { text: 'Course home\nSome navigation here' });
   append(body, el('input', { type: 'checkbox' }));
@@ -185,9 +196,10 @@ global.window = {
 };
 global.CSS = { escape: (s) => s };
 global.sessionStorage = {
-  _v: {},
+  _v: sessionStore,
   getItem(k) { return this._v[k] || null; },
-  setItem(k, v) { this._v[k] = v; }
+  setItem(k, v) { this._v[k] = String(v); },
+  removeItem(k) { delete this._v[k]; }
 };
 if (typeof global.Event === 'undefined') {
   global.Event = class Event {
@@ -292,6 +304,15 @@ setTimeout(() => {
       clicks[1].innerText === 'Submit Answer';
   } else if (scenario === 'idle') {
     ok = clicks.length === 0 && posts.length === 0;
+  } else if (scenario === 'results') {
+    console.log(JSON.stringify({
+      wrongq: JSON.parse(sessionStorage.getItem('wrongq') || '[]').length
+    }));
+    ok =
+      clicks.length === 1 &&
+      clicks[0].innerText === 'Retake Assessment' &&
+      posts.length === 0 &&
+      JSON.parse(sessionStorage.getItem('wrongq') || '[]').length >= 1;
   }
   console.log(JSON.stringify({
     scenario,
