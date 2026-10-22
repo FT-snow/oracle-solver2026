@@ -107,7 +107,22 @@ async function isTokenValid(ctx: { runQuery: (ref: unknown, args: unknown) => Pr
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   if (!token) return { ok: false };
   try {
-    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash: await sha256Hex(token) })) as {
+    const tokenHash = await sha256Hex(token);
+    // New-style multi-session tokens: one row per login.
+    const t = (await ctx.runQuery(internal.auth.getTokenByHash, { tokenHash })) as {
+      userId: string;
+      expiresAt: number;
+    } | null;
+    if (t) {
+      if (t.expiresAt && t.expiresAt < Date.now()) return { ok: false };
+      const user = (await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId })) as {
+        disabled?: boolean;
+      } | null;
+      if (!user || user.disabled) return { ok: false };
+      return { ok: true, userId: t.userId };
+    }
+    // Legacy fallback: sessions issued before the authTokens table existed.
+    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash })) as {
       disabled?: boolean;
       tokenExpiresAt?: number;
       userId: string;
@@ -302,12 +317,18 @@ http.route({
     const token = randomToken();
     const now = Date.now();
     const expiresAt = user.master ? now + 365 * 24 * 60 * 60 * 1000 : now + TOKEN_TTL_MS;
+    // Multi-session: every login ADDS a token row. The old code overwrote a
+    // single tokenHash on the user, which silently killed the session of any
+    // other device signed in to the same account.
+    await ctx.runMutation(internal.auth.createToken, {
+      userId: user.userId,
+      tokenHash: await sha256Hex(token),
+      expiresAt,
+    });
     await ctx.runMutation(internal.auth.bindDeviceAndToken, {
       id: user._id,
       // Master accounts are never device-locked: any device, any time.
       device: user.master ? undefined : user.device ? { id: user.device.id, label: user.device.label, boundAt: user.device.boundAt } : { id: deviceId, label: deviceLabel, boundAt: now },
-      tokenHash: await sha256Hex(token),
-      tokenExpiresAt: expiresAt,
       lastLoginAt: now,
     });
     return json({ ok: true, token, expiresAt, userId: user.userId, role: user.role });
@@ -321,7 +342,15 @@ http.route({
     const token = str(body.token, 200).trim();
     const deviceId = str(body.deviceId, 120).trim();
     if (!token) return json({ ok: false, code: "missing_token" }, 400);
-    const user = (await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash: await sha256Hex(token) })) as {
+    const tokenHash = await sha256Hex(token);
+    // New-style multi-session token row first, legacy single-token fallback second.
+    const t = (await ctx.runQuery(internal.auth.getTokenByHash, { tokenHash })) as {
+      userId: string;
+      expiresAt: number;
+    } | null;
+    const user = (t
+      ? await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId })
+      : await ctx.runQuery(internal.auth.getUserByTokenHash, { tokenHash })) as {
       disabled?: boolean;
       tokenExpiresAt?: number;
       userId: string;
@@ -330,9 +359,10 @@ http.route({
       device?: { id: string };
     } | null;
     if (!user || user.disabled) return json({ ok: false, code: "invalid_token" }, 401);
-    if (user.tokenExpiresAt && user.tokenExpiresAt < Date.now() && !user.master) {
-      return json({ ok: false, code: "token_expired" }, 401);
-    }
+    const expired = t
+      ? t.expiresAt && t.expiresAt < Date.now()
+      : user.tokenExpiresAt && user.tokenExpiresAt < Date.now();
+    if (expired && !user.master) return json({ ok: false, code: "token_expired" }, 401);
     if (deviceId && user.device && user.device.id !== deviceId && !user.master) {
       return json({ ok: false, code: "device_mismatch" }, 403);
     }

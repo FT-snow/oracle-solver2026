@@ -1274,9 +1274,33 @@
     return true;
   }
 
+  // Is an assessment entry point visible on this page? Used as a guard:
+  // while a quiz can be STARTED, the autopilot must never click
+  // lesson-advance buttons ("Next lesson", "mark as complete", "Continue") —
+  // doing so ended sections without attempting their quiz.
+  function assessmentEntryOnPage() {
+    const text = bodyText();
+    if (!/assessment|knowledge\s+check|\bquiz\b/i.test(text)) return false;
+    const buttons = Array.from(
+      document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
+    ).filter(isVisible);
+    return buttons.some((b) => {
+      const t = norm(b.innerText || b.value || '').toLowerCase();
+      return (
+        /take\s+(an|the)?\s*assessment/.test(t) ||
+        /start\s+(the\s+)?assessment|begin\s+(the\s+)?assessment/.test(t) ||
+        /take\s+(a|the)?\s*quiz|start\s+(the\s+)?quiz|knowledge\s+check/.test(t)
+      );
+    });
+  }
+
   // --- Lesson Reading / Slide Advancement ---
   let lastLessonNextClickTime = 0;
   function handleLessonNext() {
+    // GUARD: an assessment is startable on this page — advance NOTHING.
+    // handleStartAssessment (earlier in the cycle) opens the quiz instead.
+    if (assessmentEntryOnPage()) return false;
+
     // After "Save and Continue" the same button stays visible until the next
     // slide loads; re-clicking too fast can skip content or double-advance.
     // 3s gives the page time to transition.
@@ -1355,7 +1379,11 @@
 
     const takeAssessmentBtn = buttons.find((b) => {
       const txt = norm(b.innerText || b.value || '').toLowerCase();
-      return txt === 'take an assessment' || txt.includes('take an assessment');
+      return (
+        /take\s+(an|the)?\s*assessment/.test(txt) ||
+        /start\s+(the\s+)?assessment|begin\s+(the\s+)?assessment/.test(txt) ||
+        /take\s+(a|the)?\s*quiz|start\s+(the\s+)?quiz|knowledge\s+check/.test(txt)
+      );
     });
 
     if (takeAssessmentBtn) {

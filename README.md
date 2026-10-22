@@ -5,6 +5,21 @@ Gemini-powered solver that answers quiz questions, completes assessments, and
 moves on to the next section by itself — with every answer remembered in a
 shared database, and access locked to issued credentials (one device each).
 
+**v2.7.1 — what's new**
+
+- **Multi-device sign-in fixed (the "both devices stopped" bug).** Every
+  login used to overwrite the account's single stored token — signing in on
+  a second device silently killed the first device's session, and logging
+  back in on the first killed the second. Sessions now live in a dedicated
+  `authTokens` table (one row per login, capped at 5 per user); all devices
+  stay signed in. Existing sessions keep working via a legacy fallback.
+- **Sections no longer end without attempting the quiz.** On section-end
+  pages the autopilot could click "Next lesson" / "mark as complete" /
+  "Continue" and skip the assessment. It now detects a startable assessment
+  ("Take/Take the Assessment", "Start/Begin Assessment", "Take the Quiz",
+  "Knowledge Check") and refuses to advance the lesson while one is visible —
+  it opens the quiz instead. Assessment-entry wording is also broader.
+
 **v2.7.0 — what's new**
 
 - **Operator key fallback.** Accounts without their own Gemini key now fall
