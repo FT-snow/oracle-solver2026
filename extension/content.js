@@ -8,6 +8,7 @@
     NAV_COOLDOWN_MS: 1500,
     MAX_STALE_REPOSTS: 3,
     REPOST_MIN_INTERVAL_MS: 5000,
+    DEFAULT_SERVER: 'https://sleek-oyster-317.convex.site',
     TARGET_OUTLINE_URL:
       'https://academy.oracle.com/pls/f?p=63000:14:405939804972376:::14:P14_ID,P14_COURSE_ID:60121,66&cs=3pD3KfCV_Y_o9BCNmcvKcvrNKUpknT8dmk7GpHCM8e-Tjhq6AI9fEziAq29cP12snqyABLxhS5eBIo_RCuWQw5A',
     TARGET_CLASSES: [
@@ -70,30 +71,45 @@
 
   async function api(method, path, body) {
     return new Promise((resolve, reject) => {
-      // Preferred route: background service worker (avoids mixed-content/PNA
-      // issues from the https page). Fallback: direct fetch with CORS (relay
-      // sends Access-Control-Allow-Origin: *) when the extension context is
-      // unavailable (e.g. invalidated during reload).
-      const send = () => {
-        fetch('http://127.0.0.1:8787' + path, {
-          method,
-          headers: body ? { 'Content-Type': 'application/json' } : undefined,
-          body: body ? JSON.stringify(body) : undefined
-        })
-          .then(async (res) => {
-            let parsed = null;
-            try {
-              parsed = await res.json();
-            } catch (e) {}
-            if (res.status === 401) {
-              authState.required = true;
-              authState.ok = false;
-              authState.checkedAt = Date.now();
+      // Degraded route: direct fetch with CORS (the cloud sends
+      // Access-Control-Allow-Origin: *) used only when the extension context
+      // is unavailable (e.g. invalidated during reload). It must target the
+      // SAME server as background.js — pointing at a local relay that isn't
+      // running made every request fail and read as "offline".
+      const send = async () => {
+        try {
+          let d = {};
+          try {
+            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+              d = await new Promise((r) => chrome.storage.local.get(['serverUrl', 'session', 'deviceId'], (x) => r(x || {})));
             }
-            if (!res.ok) return reject(new Error(parsed && parsed.error ? parsed.error : 'HTTP ' + res.status));
-            resolve({ status: res.status, body: parsed });
-          })
-          .catch((e) => reject(new Error(String(e && e.message ? e.message : e))));
+          } catch (e) {}
+          const server = d.serverUrl && String(d.serverUrl).startsWith('http')
+            ? String(d.serverUrl).replace(/\/+$/, '')
+            : CONFIG.DEFAULT_SERVER;
+          const headers = {};
+          if (body) headers['Content-Type'] = 'application/json';
+          if (d.session && d.session.token) headers['Authorization'] = 'Bearer ' + d.session.token;
+          if (d.deviceId) headers['X-Device-Id'] = d.deviceId;
+          const res = await fetch(server + path, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+          });
+          let parsed = null;
+          try {
+            parsed = await res.json();
+          } catch (e) {}
+          if (res.status === 401) {
+            authState.required = true;
+            authState.ok = false;
+            authState.checkedAt = Date.now();
+          }
+          if (!res.ok) return reject(new Error(parsed && parsed.error ? parsed.error : 'HTTP ' + res.status));
+          resolve({ status: res.status, body: parsed });
+        } catch (e) {
+          reject(new Error(String(e && e.message ? e.message : e)));
+        }
       };
 
       try {
@@ -138,9 +154,15 @@
         authState.ok = true;
         return authState;
       }
-      // /me doubles as an identity probe (exists on cloud + relay alike).
+      // /me doubles as an identity probe. A real auth rejection (401/403)
+      // locks the autopilot; any other non-200 (5xx hiccup) keeps the last
+      // known state so a transient server error can't stall the run.
       const w = await api('GET', '/me');
-      authState.ok = w.status === 200 && !!(w.body && w.body.ok && w.body.userId);
+      if (w.status === 401 || w.status === 403) {
+        authState.ok = false;
+      } else {
+        authState.ok = w.status === 200 && !!(w.body && w.body.ok && w.body.userId);
+      }
     } catch (e) {
       /* relay unreachable — keep last known state */
     }
@@ -1202,7 +1224,7 @@
           document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [role="button"]')
         ).filter(isVisible).find((b) => {
           const t = norm(b.innerText || b.value || '').toLowerCase();
-          return /retake|try\s+again|re[\s-]??attempt|restart|new\s+attempt|take\s+(an|the)\s+assessment|attempt\s+again/i.test(t);
+          return /retake|try\s+again|re[\s-]??attempt|restart|new\s+attempt|take\s+(an|the)\s+assessment|attempt\s+again|assessment\s+again|take\s+assessment|start\s+over/i.test(t);
         });
         if (retakeBtn) {
           sessionStorage.setItem('auto_attempts', String(attempts + 1));

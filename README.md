@@ -5,6 +5,26 @@ Gemini-powered solver that answers quiz questions, completes assessments, and
 moves on to the next section by itself — with every answer remembered in a
 shared database, and access locked to issued credentials (one device each).
 
+**v2.7.0 — what's new**
+
+- **Operator key fallback.** Accounts without their own Gemini key now fall
+  back to the operator key pool (`GEMINI_API_KEYS` / `GEMINI_API_KEY` in the
+  Convex deployment env) for unseen questions — a missing key no longer
+  stalls the run on guesses.
+- **"Offline" flicker fixed.** The popup required only ONE slow `/health`
+  call to show "offline — check your internet". Now: 4.5s timeout + one
+  retry in the background, and the popup only reports offline after two
+  consecutive failures ("reconnecting…" in between). A signed-in session is
+  never downgraded to the login form during a brief hiccup.
+- **Degraded path fixed.** When the extension context is invalidated and the
+  content script falls back to direct fetches, it used to hit a hardcoded
+  dead local relay (`127.0.0.1:8787`) with no auth. Now it hits the same
+  server as the background worker — with the session token and device id.
+- **Transient 5xx can't lock the autopilot.** Only a real 401/403 from the
+  identity probe pauses it; a passing server hiccup keeps the run moving.
+- **Wider retake detection** on the results screen ("assessment again",
+  "take assessment", "start over", …).
+
 **v2.0.0 — what's new**
 
 - **Section-switching fixed.** The old build got trapped on the same quiz: it
@@ -140,6 +160,8 @@ npm test        # 8 tests: 6 extension DOM scenarios + DB + auth
 
 | Symptom | Fix |
 |---|---|
+| Popup flickers "offline" for a second | Normal under slow networks — it now needs 2 consecutive failures; if it stays red, check internet / Convex dashboard |
+| Solver answers but quiz score stays low | The account has no Gemini key and the question isn't in the shared DB — save a key in the popup, or set the operator key pool (`npx convex env set GEMINI_API_KEYS <keys>`) |
 | Popup says "relay offline" / "cloud unreachable" | No internet, or Convex is paused — check dashboard |
 | "login required" and nothing happens | Sign in from the extension popup |
 | `device_mismatch` at login | The account is bound elsewhere — owner runs `node admin.js reset-device <userId>` |

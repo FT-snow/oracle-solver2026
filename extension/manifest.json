@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Oracle Solver 2026",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "Autonomous Oracle Academy autopilot: shared cloud DB, learns incorrect rows from results, iterates retakes with fresh AI answers to 100%, walks sections by itself.",
   "permissions": ["storage"],
   "host_permissions": [

@@ -6,30 +6,52 @@ function setDot(el, state) {
   el.className = 'dot' + (state ? ' ' + state : '');
 }
 
+// A single failed /health or /me call (slow network, cold start) used to flip
+// the popup to "offline" instantly. Require 2 consecutive failures instead.
+let relayFailStreak = 0;
+let keyFailStreak = 0;
+
 function render(session, relay) {
   const required = !!(relay && relay.auth && relay.auth.required);
   const relayOk = !!relay && relay.ok;
 
   if (relayOk) {
+    relayFailStreak = 0;
     setDot($('relayDot'), 'ok');
     $('relayVal').textContent = `online · auth: ${relay.auth ? relay.auth.mode : 'open'}`;
   } else {
-    setDot($('relayDot'), 'bad');
-    $('relayVal').textContent = 'offline — check your internet';
+    relayFailStreak++;
+    if (relayFailStreak < 2) {
+      setDot($('relayDot'), 'warn');
+      $('relayVal').textContent = 'reconnecting…';
+    } else {
+      setDot($('relayDot'), 'bad');
+      $('relayVal').textContent = 'offline — check your internet';
+    }
   }
 
-  if (!relayOk) {
-    setDot($('authDot'), 'bad');
-    $('authVal').textContent = 'relay unreachable';
-  } else if (session) {
-    setDot($('authDot'), 'ok');
-    $('authVal').textContent = session.userId || 'signed in';
-  } else if (required) {
+  if (session) {
+    // The stored session stays authoritative through brief network hiccups —
+    // never degrade a signed-in user to "relay unreachable"/login form.
+    if (relayFailStreak < 2) {
+      setDot($('authDot'), 'ok');
+      $('authVal').textContent = session.userId || 'signed in';
+    } else {
+      setDot($('authDot'), 'warn');
+      $('authVal').textContent = (session.userId || 'signed in') + ' · offline';
+    }
+  } else if (!relayOk && relayFailStreak < 2) {
+    setDot($('authDot'), 'warn');
+    $('authVal').textContent = 'checking…';
+  } else if (relayOk && required) {
     setDot($('authDot'), 'bad');
     $('authVal').textContent = 'login required';
-  } else {
+  } else if (relayOk) {
     setDot($('authDot'), 'warn');
     $('authVal').textContent = 'open mode (no users)';
+  } else {
+    setDot($('authDot'), 'bad');
+    $('authVal').textContent = 'offline';
   }
 }
 
@@ -39,7 +61,12 @@ function showLoginForm(show) {
 }
 
 async function refresh() {
-  const res = await chrome.runtime.sendMessage({ type: 'GET_SESSION' });
+  let res = null;
+  try {
+    res = await chrome.runtime.sendMessage({ type: 'GET_SESSION' });
+  } catch (e) {
+    res = null; // background unreachable — render from nothing, retry in 5s
+  }
   const session = res && res.session;
   const relay = res && res.relay;
   render(session, relay);
@@ -135,14 +162,20 @@ async function refreshKey() {
   try {
     const me = await chrome.runtime.sendMessage({ type: 'RELAY_FETCH', method: 'GET', path: '/me' });
     if (me && me.ok && me.status === 200 && me.body && me.body.ok) {
+      keyFailStreak = 0;
       $('keyState').innerHTML = me.body.hasKey
         ? 'configured — <span style="color:var(--accent)">your key will be used automatically</span>'
-        : 'not set — the solver needs one key saved here (or in the operator .env)';
+        : 'not set — save a key here; unseen questions fall back to the operator key';
+    } else if (me && me.status === 401) {
+      keyFailStreak = 0;
+      $('keyState').textContent = 'sign in first';
     } else {
-      $('keyState').textContent = me && me.status === 401 ? 'sign in first' : 'relay offline';
+      keyFailStreak++;
+      $('keyState').textContent = keyFailStreak < 2 ? 'checking…' : 'cloud unreachable';
     }
   } catch (e) {
-    $('keyState').textContent = 'relay offline';
+    keyFailStreak++;
+    $('keyState').textContent = keyFailStreak < 2 ? 'checking…' : 'cloud unreachable';
   }
 }
 

@@ -121,20 +121,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const session = await getSession();
       const deviceId = await ensureDeviceId();
       const server = await getServer();
+      // Two attempts with a generous timeout: one slow/hiccupped request must
+      // not flip the popup to "offline" (the #1 cause of the flicker).
       let relay = null;
-      try {
-        const res = await fetch(server + '/health', { signal: AbortSignal.timeout(2500) });
-        relay = await res.json();
-      } catch (e) {
-        relay = null;
+      for (let i = 0; i < 2 && !relay; i++) {
+        try {
+          const res = await fetch(server + '/health', { signal: AbortSignal.timeout(4500) });
+          if (res.ok) relay = await res.json();
+        } catch (e) {
+          /* retry once, then give up */
+        }
       }
       let who = null;
       if (session && session.token) {
         try {
           const res = await fetch(server + '/me', {
             headers: { Authorization: `Bearer ${session.token}`, 'X-Device-Id': deviceId },
-            signal: AbortSignal.timeout(4000)
+            signal: AbortSignal.timeout(6000)
           });
+          // A rejected token means the stored session is dead — remove it so
+          // storage matches what the popup shows (login form).
+          if (res.status === 401) await clearSessionIfInvalid(401);
           const me = res.ok ? await res.json() : null;
           who = me && me.ok ? me : null;
         } catch (e) {

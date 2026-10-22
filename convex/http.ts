@@ -171,22 +171,48 @@ http.route({
       return json({ ok: true, qid: 1, ns, source: "db" });
     }
 
-    // 2. Personal AI key on the account solves unseen questions...
+    // 2. Personal AI key on the account solves unseen questions; accounts
+    // without their own key fall back to the operator key pool
+    // (GEMINI_API_KEYS / GEMINI_API_KEY deployment env) so a missing key
+    // never stalls a run. Placeholder values ("your_…") are ignored.
     const user = (await ctx.runQuery(internal.auth.getByUserId, { userId: t.userId! })) as { geminiKey?: string } | null;
-    try {
-      const solved = (await ctx.runAction(internal.quiz.solveViaGemini, {
-        question,
-        choices,
-        key: user?.geminiKey || null,
-        userId: t.userId!,
-        prevFailed,
-      })) as { ns: number[] | null; source: string };
-      ns = solved.ns;
-      // 3. ...and every AI answer is saved back so the database grows.
-      return json({ ok: true, qid: 1, ns: ns || null, source: solved.source });
-    } catch {
-      return json({ ok: true, qid: 1, ns: null, source: "error" });
+    const pool: string[] = [];
+    if (user?.geminiKey) pool.push(user.geminiKey);
+    const opKeys = String(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
+      .split(",")
+      .map((k) => k.trim())
+      .filter((k) => k.length >= 25 && !/^your_/i.test(k));
+    for (const k of opKeys) if (!pool.includes(k)) pool.push(k);
+
+    ns = null;
+    let source = "none";
+    if (pool.length) {
+      const t0 = Date.now();
+      for (const key of pool) {
+        try {
+          const solved = (await ctx.runAction(internal.quiz.solveViaGemini, {
+            question,
+            choices,
+            key,
+            userId: t.userId!,
+            prevFailed,
+          })) as { ns: number[] | null; source: string };
+          if (solved.ns && solved.ns.length) {
+            // 3. Every AI answer is saved back by solveViaGemini so the
+            // database grows.
+            ns = solved.ns;
+            source = "ai";
+            break;
+          }
+          source = solved.source;
+        } catch {
+          source = "error";
+        }
+        // Keep the whole solve inside the content script's 20s budget.
+        if (Date.now() - t0 > 15000) break;
+      }
     }
+    return json({ ok: true, qid: 1, ns, source });
   }),
 });
 
